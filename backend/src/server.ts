@@ -6,7 +6,8 @@ import dotenv from 'dotenv';
 import { connectDB } from './config/db.js';
 import './queues/aiQueue.js';
 import assignmentRoutes from './routes/assignmentRoutes.js';
-
+import { initSocketConfig } from './services/socketService.js'; // Add this at the top
+import documentRoutes from './routes/documentRoutes.js';
 // Load environment variables
 dotenv.config();
 connectDB();
@@ -26,6 +27,7 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use('/api/assignments', assignmentRoutes);
+app.use('/api/documents', documentRoutes);
 // Create an HTTP server from the Express app
 const server = http.createServer(app);
 
@@ -45,7 +47,7 @@ io.on('connection', (socket) => {
         console.log(`❌ Client disconnected: ${socket.id}`);
     });
 });
-
+initSocketConfig(io);
 // Basic Health Check Route
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', message: 'AxesAI Backend is running!' });
