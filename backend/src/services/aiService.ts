@@ -29,7 +29,7 @@ const parser = StructuredOutputParser.fromZodSchema(PaperSchema);
 // 3. Initialize the Model
 const model = new ChatGroq({
     apiKey: process.env.GROQ_API_KEY,
-    modelName: 'llama-3.3-70b-versatile',
+    model: 'llama-3.3-70b-versatile',
     temperature: 0.1, 
 });
 
