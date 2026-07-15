@@ -15,14 +15,10 @@ import './queues/aiQueue.js';
 // Load environment variables
 dotenv.config();
 connectDB();
-
-
 const app = express();
 const PORT = process.env.PORT || 5000;
 // Load environment variables
-
 // Connect to the database
-
 // ... rest of the code
 // Middleware
 app.use(cors({
@@ -36,7 +32,6 @@ app.use('/api/assignments', assignmentRoutes);
 app.use('/api/documents', documentRoutes);
 // Create an HTTP server from the Express app
 const server = http.createServer(app);
-
 // Initialize Socket.IO on top of the HTTP server
 export const io = new Server(server, {
     cors: {
@@ -44,11 +39,9 @@ export const io = new Server(server, {
         methods: ['GET', 'POST']
     }
 });
-
 // Listen for real-time WebSocket connections
 io.on('connection', (socket) => {
     console.log(`🔌 Client connected: ${socket.id}`);
-
     socket.on('disconnect', () => {
         console.log(`❌ Client disconnected: ${socket.id}`);
     });
@@ -58,7 +51,6 @@ initSocketConfig(io);
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', message: 'AxesAI Backend is running!' });
 });
-
 // Start the server
 server.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);

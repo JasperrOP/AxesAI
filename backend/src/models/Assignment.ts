@@ -13,6 +13,7 @@ export interface IAssessment extends Document {
   classroomId: mongoose.Types.ObjectId;
   createdBy: mongoose.Types.ObjectId;
   title: string;
+  status: 'pending' | 'completed' | 'failed';
   config: {
     mcqCount: number;
     shortCount: number;
@@ -30,6 +31,7 @@ const AssessmentSchema: Schema = new Schema({
   classroomId: { type: Schema.Types.ObjectId, ref: 'Classroom', required: true },
   createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   title: { type: String, required: true },
+  status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'pending' },
   config: {
     mcqCount: { type: Number, default: 0 },
     shortCount: { type: Number, default: 0 },
