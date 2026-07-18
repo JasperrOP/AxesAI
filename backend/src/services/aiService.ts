@@ -135,3 +135,195 @@ Rules:
         throw new Error("Failed to generate assessment via AI");
     }
 };
+
+export const gradeHandwrittenAnswer = async (params: { question: string; studentAnswerText: string; rubric: string }) => {
+    const { question, studentAnswerText, rubric } = params;
+
+    try {
+        const prompt = PromptTemplate.fromTemplate(`
+You are an expert examiner. Grade the student's answer based on the question and the rubric.
+Evaluate strictly and provide clear constructive feedback.
+
+Question:
+{question}
+
+Student's Answer:
+{studentAnswerText}
+
+Rubric / Criteria:
+{rubric}
+
+You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no code fences.
+The JSON object must have this exact structure:
+{{
+  "criteriaScores": {{
+    "Understanding": 4,
+    "Accuracy": 3
+  }},
+  "totalScore": 7,
+  "feedback": "The student demonstrated a good understanding but missed a key detail..."
+}}
+`);
+
+        const chain = prompt.pipe(model);
+        const result = await chain.invoke({
+            question,
+            studentAnswerText,
+            rubric
+        });
+
+        const responseText = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+        
+        let parsed;
+        try {
+            parsed = JSON.parse(responseText);
+        } catch {
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                parsed = JSON.parse(jsonMatch[0]);
+            } else {
+                throw new Error('Could not extract valid JSON from LLM response');
+            }
+        }
+
+        return {
+            criteriaScores: parsed.criteriaScores || {},
+            totalScore: parsed.totalScore || 0,
+            feedback: parsed.feedback || "No feedback generated."
+        };
+    } catch (error) {
+        console.error("❌ Error grading handwritten answer via Groq:", error);
+        throw new Error("Failed to grade answer via AI");
+    }
+};
+
+export const generatePageIndex = async (fullText: string) => {
+    try {
+        const prompt = PromptTemplate.fromTemplate(`
+You are a document structure parser. Analyze this academic document and generate a hierarchical Table of Contents (PageIndex).
+For each section/sub-section, provide a descriptive summary and key keywords that exist in that section.
+Keep the hierarchy clean and concise.
+
+Document content:
+{documentContent}
+
+You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no code fences.
+Format the output as a nested array of sections:
+{{
+  "sections": [
+    {{
+      "title": "Chapter 1: Introduction to Mechanics",
+      "summary": "Covers Newton's laws of motion, velocity, and basic definitions.",
+      "keywords": ["newton", "velocity", "acceleration", "force"],
+      "subsections": [
+        {{
+          "title": "1.1 Newton's First Law",
+          "summary": "Describes inertia and state of rest or uniform motion.",
+          "keywords": ["inertia", "first law", "rest"]
+        }}
+      ]
+    }}
+  ]
+}}
+`);
+
+        const chain = prompt.pipe(model);
+        const result = await chain.invoke({
+            documentContent: fullText.substring(0, 15000) // Safeguard LLM context limits
+        });
+
+        const responseText = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+        
+        let parsed;
+        try {
+            parsed = JSON.parse(responseText);
+        } catch {
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                parsed = JSON.parse(jsonMatch[0]);
+            } else {
+                throw new Error('Could not extract valid JSON from LLM response');
+            }
+        }
+        return parsed;
+    } catch (error) {
+        console.error("❌ Error generating PageIndex:", error);
+        throw new Error("Failed to parse PageIndex via AI");
+    }
+};
+
+export const queryPageIndex = async (pageIndex: any, fullText: string, query: string) => {
+    try {
+        // Step 1: Let LLM look at the hierarchy and select the most relevant sections
+        const selectPrompt = PromptTemplate.fromTemplate(`
+You are an intelligent router. Given a user query and a document's hierarchical page index structure, determine which section(s) contain the information needed to answer the query.
+
+User Query:
+{query}
+
+Document Page Index Structure:
+{pageIndexJson}
+
+You MUST respond with ONLY a valid JSON array of selected section/subsection titles. No explanation, no code fences.
+Example output:
+["1.1 Newton's First Law", "Chapter 1: Introduction to Mechanics"]
+`);
+
+        const routerChain = selectPrompt.pipe(model);
+        const routerResult = await routerChain.invoke({
+            query,
+            pageIndexJson: JSON.stringify(pageIndex)
+        });
+
+        const routerText = typeof routerResult.content === 'string' ? routerResult.content : JSON.stringify(routerResult.content);
+        let selectedSections: string[] = [];
+        try {
+            selectedSections = JSON.parse(routerText);
+        } catch {
+            const jsonMatch = routerText.match(/\[[\s\S]*\]/);
+            if (jsonMatch) {
+                selectedSections = JSON.parse(jsonMatch[0]);
+            }
+        }
+
+        if (!Array.isArray(selectedSections)) {
+            selectedSections = [];
+        }
+
+        // Step 2: Extract text chunks corresponding to selected sections (or fallback to top context if none selected)
+        // Since we are vector-less, we can gather text matching keyword filters or retrieve the raw text to feed the generator.
+        // Let's create a grounded generator prompt using relevant context:
+        const groundedContext = fullText.substring(0, 15000); 
+
+        const answerPrompt = PromptTemplate.fromTemplate(`
+You are a helpful classroom assistant. Answer the student query using only the provided context.
+If the answer is not in the context, politely state that it's not covered in the notes.
+
+Student Query:
+{query}
+
+Relevant Sections Selected:
+{selectedSections}
+
+Document Content:
+{context}
+
+Provide a direct, clear answer. CITE the section names you used to answer the query at the bottom of your response in the format "Source: [Section Name]".
+`);
+
+        const answerChain = answerPrompt.pipe(model);
+        const answerResult = await answerChain.invoke({
+            query,
+            selectedSections: selectedSections.join(', ') || 'General document context',
+            context: groundedContext
+        });
+
+        return {
+            answer: typeof answerResult.content === 'string' ? answerResult.content : JSON.stringify(answerResult.content),
+            citations: selectedSections
+        };
+    } catch (error) {
+        console.error("❌ Error in PageIndex RAG:", error);
+        throw new Error("Failed to answer query via PageIndex RAG");
+    }
+};

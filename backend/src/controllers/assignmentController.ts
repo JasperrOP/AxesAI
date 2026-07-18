@@ -88,3 +88,75 @@ export const getMyAssignments = async (req: AuthRequest, res: Response): Promise
         res.status(500).json({ success: false, message: 'Server error' });
     }
 };
+
+import Classroom from '../models/Classroom.js';
+import QuizResult from '../models/QuizResult.js';
+
+export const getTeacherSummary = async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        if (!req.user || req.user.role !== 'teacher') {
+            res.status(403).json({ error: 'Only teachers can access dashboard summary' });
+            return;
+        }
+
+        const teacherId = req.user.id;
+
+        // Fetch classrooms taught by this teacher
+        const classrooms = await Classroom.find({ teacherId });
+        const classroomIds = classrooms.map(c => c._id);
+
+        // Fetch assignments created by this teacher
+        const assignments = await Assignment.find({ createdBy: teacherId }).sort({ createdAt: -1 });
+
+        // Total assignments graded / results across classrooms
+        const totalSubmissions = await QuizResult.countDocuments({ classroomId: { $in: classroomIds } });
+
+        // Assignments reviewed/graded in the last 30 days
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const submissionsLast30Days = await QuizResult.countDocuments({
+            classroomId: { $in: classroomIds },
+            submittedAt: { $gte: thirtyDaysAgo }
+        });
+
+        // Time saved calculation (assuming 10 minutes saved per submission graded by AI)
+        const totalTimeSavedMinutes = totalSubmissions * 10;
+        const timeSavedHours = Math.round((totalTimeSavedMinutes / 60) * 10) / 10;
+
+        // Format recent assignments with student submission progress
+        const recentAssignments = await Promise.all(
+            assignments.slice(0, 5).map(async (assign) => {
+                const classObj = classrooms.find(c => c._id.toString() === assign.classroomId.toString());
+                const totalStudents = classObj ? classObj.studentIds.length : 0;
+                
+                const submissionsCount = await QuizResult.countDocuments({ 
+                    assessmentId: assign._id 
+                });
+
+                return {
+                    _id: assign._id,
+                    title: assign.title,
+                    status: assign.status,
+                    createdAt: assign.createdAt,
+                    classroomName: classObj ? classObj.name : 'General',
+                    submissionsCount,
+                    totalStudents,
+                    progressPercent: totalStudents > 0 ? (submissionsCount / totalStudents) * 100 : 0
+                };
+            })
+        );
+
+        res.status(200).json({
+            success: true,
+            summary: {
+                assignmentsReviewed30Days: submissionsLast30Days,
+                timeSavedHours,
+                totalAssignmentsGraded: totalSubmissions,
+                recentAssignments
+            }
+        });
+    } catch (error: any) {
+        console.error('Error fetching teacher summary:', error);
+        res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    }
+};

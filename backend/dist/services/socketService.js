@@ -1,22 +1,76 @@
 import QuizSession from '../models/QuizSession.js';
-// In-memory tracker for active server intervals so we can clear them when the quiz ends
+import Message from '../models/Message.js';
+import Assignment from '../models/Assignment.js';
+import QuizResult from '../models/QuizResult.js';
+// In-memory trackers for active quiz sessions and timers
+const activeSessions = {};
 const activeTimers = {};
 export const initSocketConfig = (io) => {
     io.on('connection', (socket) => {
         console.log(`User connected: ${socket.id}`);
         // 1. Join Classroom Room
-        socket.on('room:join', ({ classroomId, role, name }) => {
+        socket.on('room:join', ({ classroomId, role, name, studentId }) => {
             const roomName = `class_${classroomId}`;
             socket.join(roomName);
             console.log(`${name} (${role}) joined room: ${roomName}`);
-            // Notify others in the room (e.g., updating the teacher's live roster UI)
+            // Notify others in the room
             socket.to(roomName).emit('room:user_joined', { socketId: socket.id, name, role });
+            // If a quiz is currently live, send the state to the joining student so they can resume
+            const session = activeSessions[classroomId];
+            if (session && role === 'student' && studentId) {
+                const studentData = session.studentAnswers[studentId];
+                const hasViolatedMax = studentData && studentData.violations.length >= 3;
+                socket.emit('quiz:started', {
+                    assessmentId: session.assessmentId,
+                    currentIndex: session.currentIndex,
+                    timeRemaining: session.timeRemaining,
+                    question: {
+                        prompt: session.questions[session.currentIndex].prompt,
+                        options: session.questions[session.currentIndex].options,
+                        type: session.questions[session.currentIndex].type,
+                        difficulty: session.questions[session.currentIndex].difficulty,
+                        marks: session.questions[session.currentIndex].marks
+                    },
+                    violationCount: studentData ? studentData.violations.length : 0,
+                    isAutoSubmitted: hasViolatedMax
+                });
+            }
         });
-        // 2. Teacher Launches the Quiz
-        socket.on('quiz:launch', async ({ classroomId, assessmentId, durationSec }) => {
+        // 2. Chat messaging inside classroom
+        socket.on('message:send', async ({ classroomId, senderId, senderName, senderRole, content, attachment }) => {
             const roomName = `class_${classroomId}`;
             try {
-                // Initialize or update the session state in MongoDB
+                const newMessage = await Message.create({
+                    classroomId,
+                    senderId,
+                    senderName,
+                    senderRole,
+                    content,
+                    attachmentUrl: attachment?.url,
+                    attachmentName: attachment?.name,
+                });
+                io.to(roomName).emit('message:new', newMessage);
+            }
+            catch (err) {
+                console.error('Failed to save and broadcast message:', err);
+                socket.emit('error', { message: 'Failed to send message.' });
+            }
+        });
+        // 3. Teacher Launches the Quiz
+        socket.on('quiz:launch', async ({ classroomId, assessmentId }) => {
+            const roomName = `class_${classroomId}`;
+            try {
+                const assessment = await Assignment.findById(assessmentId);
+                if (!assessment || !assessment.generatedPaper || assessment.generatedPaper.length === 0) {
+                    socket.emit('error', { message: 'Assessment not found or invalid' });
+                    return;
+                }
+                const questions = assessment.generatedPaper[0].questions;
+                if (!questions || questions.length === 0) {
+                    socket.emit('error', { message: 'Assessment contains no questions' });
+                    return;
+                }
+                const durationSec = questions[0].durationSec || 60;
                 let session = await QuizSession.findOne({ classroomId, assessmentId });
                 if (!session) {
                     session = new QuizSession({ classroomId, assessmentId, durationSec, status: 'live' });
@@ -27,52 +81,204 @@ export const initSocketConfig = (io) => {
                 }
                 session.startedAt = new Date();
                 await session.save();
-                // Broadcast to all students in the room to transition their UI to the quiz view
+                // Initialize active session memory
+                activeSessions[classroomId] = {
+                    assessmentId,
+                    questions,
+                    currentIndex: 0,
+                    timeRemaining: durationSec,
+                    studentAnswers: {}
+                };
+                // Broadcast to all students in the room
                 io.to(roomName).emit('quiz:started', {
                     assessmentId,
-                    durationSec,
-                    sessionStatus: 'live'
+                    currentIndex: 0,
+                    timeRemaining: durationSec,
+                    question: {
+                        prompt: questions[0].prompt,
+                        options: questions[0].options,
+                        type: questions[0].type,
+                        difficulty: questions[0].difficulty,
+                        marks: questions[0].marks
+                    }
                 });
-                // Start the server-authoritative countdown loop
-                startServerTimer(io, roomName, classroomId, durationSec);
+                // Start server timer
+                startServerTimer(io, roomName, classroomId);
             }
             catch (error) {
                 console.error('Failed to launch quiz session:', error);
                 socket.emit('error', { message: 'Failed to initialize live session.' });
             }
         });
-        // 3. Disconnection clean up
+        // 4. Student Submits Answer for Current Question
+        socket.on('quiz:submit_answer', ({ classroomId, studentId, studentName, questionIndex, answer }) => {
+            const session = activeSessions[classroomId];
+            if (!session)
+                return;
+            if (!session.studentAnswers[studentId]) {
+                session.studentAnswers[studentId] = {
+                    name: studentName,
+                    answers: {},
+                    violations: []
+                };
+            }
+            const studentData = session.studentAnswers[studentId];
+            if (studentData.autoSubmitted)
+                return;
+            studentData.answers[questionIndex] = answer;
+        });
+        // 5. Student Violates Anti-Cheat
+        socket.on('quiz:violation', ({ classroomId, studentId, studentName, type }) => {
+            const session = activeSessions[classroomId];
+            if (!session)
+                return;
+            if (!session.studentAnswers[studentId]) {
+                session.studentAnswers[studentId] = {
+                    name: studentName,
+                    answers: {},
+                    violations: []
+                };
+            }
+            const studentData = session.studentAnswers[studentId];
+            if (studentData.autoSubmitted)
+                return;
+            studentData.violations.push({
+                type,
+                timestamp: new Date()
+            });
+            // Send update back to the single student
+            socket.emit('quiz:violation_logged', {
+                violationCount: studentData.violations.length
+            });
+            if (studentData.violations.length >= 3) {
+                studentData.autoSubmitted = true;
+                socket.emit('quiz:auto_submitted', { reason: '3 violations reached' });
+            }
+        });
+        // 6. Teacher Ends Quiz Early
+        socket.on('quiz:end_early', async ({ classroomId }) => {
+            if (activeTimers[classroomId]) {
+                clearInterval(activeTimers[classroomId]);
+                delete activeTimers[classroomId];
+            }
+            const roomName = `class_${classroomId}`;
+            await endQuizSession(io, roomName, classroomId);
+        });
+        // 7. Disconnection clean up
         socket.on('disconnect', () => {
             console.log(`User disconnected: ${socket.id}`);
         });
     });
 };
-// Authoritative ticking mechanism running completely on the server
-const startServerTimer = (io, roomName, classroomId, duration) => {
-    // Clear any existing timer for this classroom to prevent duplicate intervals
+// Tick timer running authoritative countdowns on the server
+const startServerTimer = (io, roomName, classroomId) => {
     if (activeTimers[classroomId]) {
         clearInterval(activeTimers[classroomId]);
     }
-    let timeRemaining = duration;
     activeTimers[classroomId] = setInterval(async () => {
-        timeRemaining--;
-        if (timeRemaining <= 0) {
+        const session = activeSessions[classroomId];
+        if (!session) {
             clearInterval(activeTimers[classroomId]);
             delete activeTimers[classroomId];
-            // 1. Tell all clients to immediately freeze inputs and auto-submit their forms
-            io.to(roomName).emit('quiz:time_up');
-            // 2. Persist the ended status to the database
-            try {
-                await QuizSession.updateOne({ classroomId, status: 'live' }, { status: 'ended' });
+            return;
+        }
+        session.timeRemaining--;
+        if (session.timeRemaining <= 0) {
+            session.currentIndex++;
+            if (session.currentIndex < session.questions.length) {
+                const nextQ = session.questions[session.currentIndex];
+                session.timeRemaining = nextQ.durationSec || 60;
+                io.to(roomName).emit('quiz:question', {
+                    currentIndex: session.currentIndex,
+                    timeRemaining: session.timeRemaining,
+                    question: {
+                        prompt: nextQ.prompt,
+                        options: nextQ.options,
+                        type: nextQ.type,
+                        difficulty: nextQ.difficulty,
+                        marks: nextQ.marks
+                    }
+                });
             }
-            catch (err) {
-                console.error('Error auto-closing quiz session in DB:', err);
+            else {
+                clearInterval(activeTimers[classroomId]);
+                delete activeTimers[classroomId];
+                await endQuizSession(io, roomName, classroomId);
             }
-            console.log(`Quiz in room ${roomName} has naturally concluded.`);
         }
         else {
-            // Broadcast the exact current time remaining to everyone in the room every single second
-            io.to(roomName).emit('quiz:tick', { timeRemaining });
+            io.to(roomName).emit('quiz:tick', {
+                timeRemaining: session.timeRemaining,
+                currentIndex: session.currentIndex
+            });
         }
     }, 1000);
+};
+// Grade all submissions, save them in MongoDB, rank students, and broadcast scoreboard
+const endQuizSession = async (io, roomName, classroomId) => {
+    const session = activeSessions[classroomId];
+    if (!session)
+        return;
+    try {
+        await QuizSession.updateOne({ classroomId, status: 'live' }, { status: 'ended' });
+        const scoreboardData = [];
+        for (const [studentId, data] of Object.entries(session.studentAnswers)) {
+            const studentAnswers = [];
+            let totalScore = 0;
+            for (let i = 0; i < session.questions.length; i++) {
+                const question = session.questions[i];
+                const studentAns = data.answers[i] || '';
+                let score = 0;
+                let status = 'graded';
+                if (question.type === 'mcq') {
+                    const isCorrect = studentAns.trim().toLowerCase() === question.answerKey.trim().toLowerCase();
+                    score = isCorrect ? question.marks : 0;
+                }
+                else {
+                    status = 'pending_review';
+                }
+                totalScore += score;
+                studentAnswers.push({
+                    questionId: question._id?.toString() || String(i),
+                    studentAnswer: studentAns,
+                    score,
+                    status
+                });
+            }
+            await QuizResult.create({
+                classroomId,
+                assessmentId: session.assessmentId,
+                studentId,
+                studentName: data.name,
+                answers: studentAnswers,
+                violations: data.violations,
+                totalScore
+            });
+            scoreboardData.push({
+                studentId,
+                name: data.name,
+                score: totalScore,
+                violationCount: data.violations.length
+            });
+        }
+        // Rank students by score (descending), then violationCount (ascending)
+        scoreboardData.sort((a, b) => {
+            if (b.score !== a.score) {
+                return b.score - a.score;
+            }
+            return a.violationCount - b.violationCount;
+        });
+        const scoreboardWithRank = scoreboardData.map((item, idx) => ({
+            ...item,
+            rank: idx + 1
+        }));
+        io.to(roomName).emit('quiz:ended', {
+            scoreboard: scoreboardWithRank
+        });
+        delete activeSessions[classroomId];
+        console.log(`Quiz session in room ${roomName} ended, scored, and saved.`);
+    }
+    catch (error) {
+        console.error('Error closing quiz session:', error);
+    }
 };

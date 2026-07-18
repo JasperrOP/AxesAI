@@ -3,6 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
 import { connectDB } from './config/db.js';
 import './queues/aiQueue.js';
 import authRoutes from './routes/authRoutes.js';
@@ -10,6 +11,7 @@ import classroomRoutes from './routes/classroomRoutes.js';
 import assignmentRoutes from './routes/assignmentRoutes.js';
 import { initSocketConfig } from './services/socketService.js'; // Add this at the top
 import documentRoutes from './routes/documentRoutes.js';
+import chatRoutes from './routes/chatRoutes.js';
 // Add this near the top of your server.ts file
 import './queues/aiQueue.js';
 // Load environment variables
@@ -29,11 +31,14 @@ app.use(cors({
     origin: 'http://localhost:3000', // Our Next.js frontend URL
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
 }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 app.use('/api/auth', authRoutes);
 app.use('/api/classrooms', classroomRoutes);
 app.use('/api/assignments', assignmentRoutes);
 app.use('/api/documents', documentRoutes);
+app.use('/api/chat', chatRoutes);
 // Create an HTTP server from the Express app
 const server = http.createServer(app);
 

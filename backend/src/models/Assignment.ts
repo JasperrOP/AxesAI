@@ -7,6 +7,7 @@ export interface IQuestion {
   answerKey: string;
   difficulty: 'Easy' | 'Moderate' | 'Hard';
   marks: number;
+  durationSec?: number; // per-question countdown (seconds)
 }
 
 export interface IAssessment extends Document {
@@ -46,7 +47,8 @@ const AssessmentSchema: Schema = new Schema({
       options: [String],
       answerKey: { type: String, required: true },
       difficulty: { type: String, enum: ['Easy', 'Moderate', 'Hard'], default: 'Moderate' },
-      marks: { type: Number, required: true }
+      marks: { type: Number, required: true },
+      durationSec: { type: Number, default: 60 }
     }]
   }],
   createdAt: { type: Date, default: Date.now }

@@ -3,14 +3,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { GlassPanel } from '../components/GlassPanel';
 import { GlassButton } from '../components/GlassButton';
-import { Mail, Lock, User, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Mail, Lock, User, Sparkles, ArrowRight, ShieldCheck, Camera } from 'lucide-react';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
 import gsap from 'gsap';
+import FaceCapture from '../components/FaceCapture';
 
 export default function LandingShowcase() {
   const router = useRouter();
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [useFaceLogin, setUseFaceLogin] = useState(false);
+  const [showFaceCapture, setShowFaceCapture] = useState(false);
   
   // Auth Form State
   const [name, setName] = useState('');
@@ -60,6 +63,15 @@ export default function LandingShowcase() {
   // Authentication submission
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (authMode === 'login' && useFaceLogin) {
+      if (!email) {
+        setMessage({ type: 'error', text: 'Email is required for Face ID login' });
+        return;
+      }
+      setShowFaceCapture(true);
+      return;
+    }
+
     setLoading(true);
     setMessage(null);
 
@@ -110,6 +122,50 @@ export default function LandingShowcase() {
       setMessage({
         type: 'error',
         text: error.response?.data?.message || 'Something went wrong. Please check if backend is running.',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFaceCaptured = async (frames: string[]) => {
+    setShowFaceCapture(false);
+    setLoading(true);
+    setMessage(null);
+    try {
+      const response = await axios.post('http://localhost:5001/api/auth/login-face', {
+        email: email.toLowerCase().trim(),
+        frame: frames[0],
+      });
+      
+      setMessage({
+        type: 'success',
+        text: response.data.message || 'Logged in successfully!',
+      });
+      
+      if (response.data.token) {
+        localStorage.setItem('token', response.data.token);
+        localStorage.setItem('user', JSON.stringify(response.data.user));
+        
+        gsap.to(formRef.current, {
+          opacity: 0,
+          scale: 0.9,
+          y: -20,
+          duration: 0.4,
+          ease: 'power2.inOut',
+          onComplete: () => {
+            if (response.data.user.role === 'teacher') {
+              router.push('/dashboard/teacher');
+            } else {
+              router.push('/dashboard/student');
+            }
+          }
+        });
+      }
+    } catch (error: any) {
+      setMessage({
+        type: 'error',
+        text: error.response?.data?.message || 'Face login failed. Make sure Face ID is set up for this email.',
       });
     } finally {
       setLoading(false);
@@ -192,20 +248,52 @@ export default function LandingShowcase() {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 pl-1">Password</label>
-                <div className="relative">
-                  <Lock className="absolute left-4 top-3.5 w-4 h-4 text-gray-500" />
-                  <input 
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="glass-input w-full pl-11 pr-4 py-3 text-sm text-white placeholder-gray-600"
-                  />
+              {authMode === 'login' && useFaceLogin ? (
+                <div className="p-4 rounded-xl border border-cyan-500/20 bg-cyan-500/5 text-center my-4">
+                  <p className="text-xs text-gray-300 mb-3">Face ID login is enabled. Please enter your email and scan your face.</p>
+                  <GlassButton
+                    type="button"
+                    onClick={() => {
+                      if (!email) {
+                        setMessage({ type: 'error', text: 'Please enter your email first.' });
+                        return;
+                      }
+                      setShowFaceCapture(true);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 text-xs"
+                  >
+                    <Camera className="w-4 h-4 text-cyan-400" /> Scan Face
+                  </GlassButton>
                 </div>
-              </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 pl-1">Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-4 top-3.5 w-4 h-4 text-gray-500" />
+                    <input 
+                      type="password"
+                      required={!useFaceLogin}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="glass-input w-full pl-11 pr-4 py-3 text-sm text-white placeholder-gray-600"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {authMode === 'login' && (
+                <div className="flex justify-end mt-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setUseFaceLogin(!useFaceLogin)}
+                    className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold bg-transparent border-0 cursor-pointer flex items-center gap-1"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    {useFaceLogin ? 'Use password instead' : 'Login with FaceID'}
+                  </button>
+                </div>
+              )}
 
               {authMode === 'register' && (
                 <div>
@@ -237,15 +325,17 @@ export default function LandingShowcase() {
                 </div>
               )}
 
-              <GlassButton 
-                type="submit" 
-                variant="accent" 
-                disabled={loading}
-                className="w-full mt-4 flex items-center justify-center gap-2"
-              >
-                {loading ? 'Please wait...' : authMode === 'login' ? 'Sign In' : 'Sign Up'}
-                {!loading && <ArrowRight className="w-4 h-4" />}
-              </GlassButton>
+              {(!useFaceLogin || authMode === 'register') && (
+                <GlassButton 
+                  type="submit" 
+                  variant="accent" 
+                  disabled={loading}
+                  className="w-full mt-4 flex items-center justify-center gap-2"
+                >
+                  {loading ? 'Please wait...' : authMode === 'login' ? 'Sign In' : 'Sign Up'}
+                  {!loading && <ArrowRight className="w-4 h-4" />}
+                </GlassButton>
+              )}
             </form>
 
             <div className="mt-6 text-center">
@@ -253,6 +343,7 @@ export default function LandingShowcase() {
                 onClick={() => {
                   setAuthMode(authMode === 'login' ? 'register' : 'login');
                   setMessage(null);
+                  setUseFaceLogin(false);
                 }}
                 className="text-xs text-cyan-400 hover:underline bg-transparent border-0 cursor-pointer"
               >
@@ -262,6 +353,17 @@ export default function LandingShowcase() {
           </GlassPanel>
         </div>
       </section>
+
+      {/* Face Capture Overlay Modal */}
+      {showFaceCapture && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+          <FaceCapture 
+            mode="login" 
+            onCaptureComplete={handleFaceCaptured} 
+            onCancel={() => setShowFaceCapture(false)} 
+          />
+        </div>
+      )}
     </main>
   );
 }

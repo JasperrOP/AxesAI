@@ -97,3 +97,110 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ message: 'Login failed', error: error.message });
   }
 };
+
+import { AuthRequest } from '../middleware/authMiddleware.js';
+
+export const registerFace = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { frames } = req.body;
+    if (!frames || !Array.isArray(frames) || frames.length === 0) {
+      res.status(400).json({ message: 'Frames array is required' });
+      return;
+    }
+
+    if (!req.user) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
+
+    const faceServiceUrl = process.env.FACE_SERVICE_URL || 'http://localhost:8001';
+
+    const response = await fetch(`${faceServiceUrl}/register-face`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frames })
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({ detail: 'Failed to extract face embedding' }));
+      res.status(response.status).json({ message: errData.detail || 'Face registration failed at microservice' });
+      return;
+    }
+
+    const data = await response.json() as { embedding: number[] };
+
+    await User.findByIdAndUpdate(req.user.id, { faceEmbedding: data.embedding });
+
+    res.status(200).json({ message: 'Face registered successfully' });
+  } catch (error: any) {
+    res.status(500).json({ message: 'Face registration failed', error: error.message });
+  }
+};
+
+export const loginWithFace = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { email, frame } = req.body;
+    if (!email || !frame) {
+      res.status(400).json({ message: 'Email and frame are required' });
+      return;
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) {
+      res.status(401).json({ message: 'Invalid email or user not found' });
+      return;
+    }
+
+    if (!user.faceEmbedding || user.faceEmbedding.length === 0) {
+      res.status(400).json({ message: 'Face login has not been set up for this account' });
+      return;
+    }
+
+    const faceServiceUrl = process.env.FACE_SERVICE_URL || 'http://localhost:8001';
+
+    const response = await fetch(`${faceServiceUrl}/verify-face`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frame, storedEmbedding: user.faceEmbedding })
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({ detail: 'Failed to verify face' }));
+      res.status(response.status).json({ message: errData.detail || 'Face verification failed at microservice' });
+      return;
+    }
+
+    const data = await response.json() as { match: boolean; distance: number; error?: string };
+
+    if (data.error) {
+      res.status(401).json({ message: data.error });
+      return;
+    }
+
+    if (!data.match) {
+      res.status(401).json({ message: 'Face verification failed. Try again.' });
+      return;
+    }
+
+    const secret = process.env.JWT_SECRET || 'fallback_secret_for_development';
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      secret,
+      { expiresIn: '2h' }
+    );
+
+    res.status(200).json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: 'Face login failed', error: error.message });
+  }
+};
+
