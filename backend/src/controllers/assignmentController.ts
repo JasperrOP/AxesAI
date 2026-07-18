@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/authMiddleware.js';
 import Assignment from '../models/Assignment.js';
 import { aiQueue } from '../queues/aiQueue.js';
+import { generateQuestionPaper } from '../services/aiService.js';
 
 interface QuestionTypeConfig {
     type: string;
@@ -129,8 +130,8 @@ export const getTeacherSummary = async (req: AuthRequest, res: Response): Promis
                 const classObj = classrooms.find(c => c._id.toString() === assign.classroomId.toString());
                 const totalStudents = classObj ? classObj.studentIds.length : 0;
                 
-                const submissionsCount = await QuizResult.countDocuments({ 
-                    assessmentId: assign._id 
+                const submissionsCount = await QuizResult.countDocuments({
+                    assessmentId: String(assign._id)
                 });
 
                 return {
@@ -158,5 +159,44 @@ export const getTeacherSummary = async (req: AuthRequest, res: Response): Promis
     } catch (error: any) {
         console.error('Error fetching teacher summary:', error);
         res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    }
+};
+// Synchronously generate MCQ quiz questions (with options + answer key) via AI,
+// so the teacher can drop them straight into the Live Quiz Control form.
+export const generateInlineQuiz = async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        if (!req.user) {
+            res.status(401).json({ error: 'Authentication required' });
+            return;
+        }
+
+        const { topic, count, contextText } = req.body;
+        const n = Math.min(Math.max(parseInt(count, 10) || 5, 1), 15);
+
+        const sections = await generateQuestionPaper({
+            additionalInstructions: topic || 'General Academic Quiz',
+            questionTypes: [{ type: 'mcq', count: n, marks: 1 }],
+            contextText: contextText || ''
+        });
+
+        const questions = (sections as any[])
+            .flatMap((s: any) => s.questions || [])
+            .filter((q: any) => q.type === 'mcq')
+            .map((q: any) => {
+                const opts = Array.isArray(q.options) ? q.options.slice(0, 4) : [];
+                while (opts.length < 4) opts.push('');
+                return {
+                    prompt: q.prompt || '',
+                    options: opts,
+                    answerKey: q.answerKey || opts[0] || '',
+                    marks: q.marks || 1,
+                    difficulty: q.difficulty || 'Moderate'
+                };
+            });
+
+        res.status(200).json({ questions });
+    } catch (error: any) {
+        console.error('Error generating inline quiz:', error);
+        res.status(500).json({ error: error.message || 'Failed to generate quiz' });
     }
 };

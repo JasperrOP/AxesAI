@@ -1,6 +1,8 @@
 fastapi
 uvicorn
 face_recognition
+# face_recognition needs its models shipped in a separate repo (not on PyPI):
+face_recognition_models @ git+https://github.com/ageitgey/face_recognition_models
 opencv-python-headless
 numpy
 python-multipart

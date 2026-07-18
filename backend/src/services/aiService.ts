@@ -327,3 +327,103 @@ Provide a direct, clear answer. CITE the section names you used to answer the qu
         throw new Error("Failed to answer query via PageIndex RAG");
     }
 };
+// Generate a structured lesson plan for a topic (AI Lesson Planner sidebar feature)
+export const generateLessonPlan = async (params: { topic: string; gradeLevel?: string; durationMins?: number; contextText?: string }) => {
+    const { topic, gradeLevel, durationMins, contextText } = params;
+    try {
+        const prompt = PromptTemplate.fromTemplate(`
+You are an expert curriculum designer. Create a clear, practical lesson plan.
+
+Topic: {topic}
+Target level: {gradeLevel}
+Total duration: {durationMins} minutes
+{contextBlock}
+
+You MUST respond with ONLY a valid JSON object. No markdown, no code fences.
+Use this exact structure:
+{{
+  "title": "Lesson title",
+  "summary": "1-2 sentence overview",
+  "objectives": ["learners will be able to ...", "..."],
+  "prerequisites": ["..."],
+  "materials": ["..."],
+  "outline": [
+    {{ "phase": "Introduction / Hook", "durationMins": 5, "activities": ["..."] }},
+    {{ "phase": "Direct Instruction", "durationMins": 15, "activities": ["..."] }},
+    {{ "phase": "Guided Practice", "durationMins": 15, "activities": ["..."] }},
+    {{ "phase": "Independent Practice", "durationMins": 10, "activities": ["..."] }},
+    {{ "phase": "Assessment / Wrap-up", "durationMins": 5, "activities": ["..."] }}
+  ],
+  "assessmentIdeas": ["..."],
+  "homework": ["..."]
+}}
+`);
+        const chain = prompt.pipe(model);
+        const result = await chain.invoke({
+            topic,
+            gradeLevel: gradeLevel || 'General / mixed ability',
+            durationMins: (durationMins || 45).toString(),
+            contextBlock: contextText ? `Ground the plan in these teacher notes where relevant:\n---\n${contextText.substring(0, 8000)}\n---` : ''
+        });
+        const responseText = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+        let parsed;
+        try {
+            parsed = JSON.parse(responseText);
+        } catch {
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+            else throw new Error('Could not extract lesson plan JSON');
+        }
+        return parsed;
+    } catch (error) {
+        console.error('❌ Error generating lesson plan:', error);
+        throw new Error('Failed to generate lesson plan via AI');
+    }
+};
+
+// Analyze quiz performance and produce learning gaps + recommended actions (Analytics infographic)
+export const analyzeLearningGaps = async (params: { classroomName: string; questionStats: any[]; studentStats: any[] }) => {
+    const { classroomName, questionStats, studentStats } = params;
+    try {
+        const prompt = PromptTemplate.fromTemplate(`
+You are a teaching analytics assistant. Based on aggregated quiz performance, identify the concepts students struggle with most and give the teacher concrete recommended actions.
+
+Classroom: {classroomName}
+
+Per-question performance (question text and % of students who got it wrong):
+{questionStats}
+
+Per-student summary (name and average score %):
+{studentStats}
+
+You MUST respond with ONLY a valid JSON object. No markdown, no code fences.
+Structure:
+{{
+  "learningGaps": [ {{ "concept": "short concept name", "missRate": 23 }} ],
+  "recommendedActions": [ "specific action a teacher can take", "..." ]
+}}
+Return at most 5 learning gaps (highest miss rate first) and at most 5 actions.
+`);
+        const chain = prompt.pipe(model);
+        const result = await chain.invoke({
+            classroomName,
+            questionStats: JSON.stringify(questionStats).substring(0, 6000),
+            studentStats: JSON.stringify(studentStats).substring(0, 3000),
+        });
+        const responseText = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+        let parsed;
+        try {
+            parsed = JSON.parse(responseText);
+        } catch {
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { learningGaps: [], recommendedActions: [] };
+        }
+        return {
+            learningGaps: parsed.learningGaps || [],
+            recommendedActions: parsed.recommendedActions || [],
+        };
+    } catch (error) {
+        console.error('❌ Error analyzing learning gaps:', error);
+        return { learningGaps: [], recommendedActions: [] };
+    }
+};

@@ -7,7 +7,8 @@ import {
   Plus, Users, LogOut, BookOpen, FilePlus, Copy, Check, Sparkles, 
   LayoutDashboard, FileText, Settings, Library, Wrench, ChevronRight,
   Upload, Loader2, X, Minus, CheckCircle2, Download, UploadCloud, Camera, Play,
-  Trash2, StickyNote, Save, FileQuestion
+  Trash2, StickyNote, Save, FileQuestion, BookOpenCheck, UserCheck, FileSpreadsheet,
+  Target, Lightbulb, GraduationCap
 } from 'lucide-react';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
@@ -15,8 +16,9 @@ import gsap from 'gsap';
 import { io, Socket } from 'socket.io-client';
 import FaceCapture from '../../../components/FaceCapture';
 import ClassroomChat from '../../../components/ClassroomChat';
-import { 
-  ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid, LineChart, Line 
+import { ThemeToggle } from '../../../components/ThemeToggle';
+import {
+  ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid, LineChart, Line
 } from 'recharts';
 
 // ============ Types ============
@@ -44,7 +46,7 @@ const QUESTION_TYPE_OPTIONS = [
   { value: 'diagram', label: 'Diagram/Graph-Based Questions' },
 ];
 
-type View = 'home' | 'classrooms' | 'assignments' | 'create-assignment' | 'view-paper' | 'ai-grading';
+type View = 'home' | 'classrooms' | 'assignments' | 'create-assignment' | 'view-paper' | 'ai-grading' | 'lesson-planner' | 'attendance' | 'gradebook';
 
 export default function TeacherDashboard() {
   const router = useRouter();
@@ -77,6 +79,12 @@ export default function TeacherDashboard() {
   const [inlineQuizQuestions, setInlineQuizQuestions] = useState<InlineQuizQuestion[]>([
     { id: '1', prompt: '', options: ['', '', '', ''], answerKey: '', marks: 1, durationSec: 60 }
   ]);
+
+  // AI Quiz Generation State
+  const [aiQuizTopic, setAiQuizTopic] = useState('');
+  const [aiQuizCount, setAiQuizCount] = useState(5);
+  const [isGeneratingAIQuiz, setIsGeneratingAIQuiz] = useState(false);
+  const [aiQuizError, setAiQuizError] = useState('');
 
   // Classroom Notes State
   const [classroomNotes, setClassroomNotes] = useState('');
@@ -111,6 +119,8 @@ export default function TeacherDashboard() {
 
   // Student Search + Performance state
   const [studentSearchQuery, setStudentSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[] | null>(null); // null = not searching, [] = searched, no matches
+  const [isSearching, setIsSearching] = useState(false);
   const [selectedStudentPerf, setSelectedStudentPerf] = useState<any>(null);
   const [isFetchingStudentPerf, setIsFetchingStudentPerf] = useState(false);
 
@@ -126,6 +136,28 @@ export default function TeacherDashboard() {
   // Spoken Viva history states
   const [vivaHistory, setVivaHistory] = useState<any[]>([]);
   const [selectedVivaReview, setSelectedVivaReview] = useState<any>(null);
+
+  // AI Lesson Planner state
+  const [lessonTopic, setLessonTopic] = useState('');
+  const [lessonGrade, setLessonGrade] = useState('');
+  const [lessonDuration, setLessonDuration] = useState(45);
+  const [isGeneratingLesson, setIsGeneratingLesson] = useState(false);
+  const [lessonError, setLessonError] = useState('');
+  const [lessonPlans, setLessonPlans] = useState<any[]>([]);
+  const [activeLessonPlan, setActiveLessonPlan] = useState<any>(null);
+
+  // Attendance state
+  const [attendanceClassroom, setAttendanceClassroom] = useState<any>(null);
+  const [presentRoster, setPresentRoster] = useState<any[]>([]);
+
+  // Gradebook state
+  const [gradebookClassroom, setGradebookClassroom] = useState<any>(null);
+  const [gradebook, setGradebook] = useState<any>(null);
+  const [isFetchingGradebook, setIsFetchingGradebook] = useState(false);
+
+  // Analytics AI insights state
+  const [insights, setInsights] = useState<any>(null);
+  const [isFetchingInsights, setIsFetchingInsights] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -275,6 +307,41 @@ export default function TeacherDashboard() {
     ]);
   };
 
+  // ============ AI Quiz Generation ============
+  const handleGenerateAIQuiz = async () => {
+    setAiQuizError('');
+    setIsGeneratingAIQuiz(true);
+    try {
+      const notes = selectedClassroom ? (localStorage.getItem(`notes_${selectedClassroom._id}`) || '') : '';
+      const res = await axios.post('http://localhost:5001/api/assignments/generate-quiz', {
+        topic: aiQuizTopic || 'General Academic Quiz',
+        count: aiQuizCount,
+        contextText: notes
+      }, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+
+      const generated = res.data.questions || [];
+      if (generated.length === 0) {
+        setAiQuizError('AI returned no questions. Try a more specific topic.');
+        return;
+      }
+
+      setInlineQuizQuestions(generated.map((q: any, idx: number) => ({
+        id: `${Date.now()}_${idx}`,
+        prompt: q.prompt,
+        options: q.options && q.options.length === 4 ? q.options : ['', '', '', ''],
+        answerKey: q.answerKey,
+        marks: q.marks || 1,
+        durationSec: 60
+      })));
+    } catch (err: any) {
+      setAiQuizError(err.response?.data?.error || 'Failed to generate quiz. Is the backend running?');
+    } finally {
+      setIsGeneratingAIQuiz(false);
+    }
+  };
+
   // ============ Notes Handlers ============
   // Load notes when classroom changes
   useEffect(() => {
@@ -300,6 +367,7 @@ export default function TeacherDashboard() {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       setClassroomAnalytics(res.data);
+      fetchInsights(classroomId);
     } catch (err) {
       console.error('Failed to fetch classroom analytics:', err);
     } finally {
@@ -364,6 +432,32 @@ export default function TeacherDashboard() {
     }
   }, [selectedClassroom]);
 
+  // Debounced server-side student search (indexed, across all the teacher's classrooms)
+  useEffect(() => {
+    const q = studentSearchQuery.trim();
+    if (!q) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
+    setIsSearching(true);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await axios.get(`http://localhost:5001/api/classrooms/students/search`, {
+          params: { query: q },
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        setSearchResults(res.data.students || []);
+      } catch (err) {
+        console.error('Failed to search students:', err);
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [studentSearchQuery]);
+
   const fetchStudentPerformance = async (studentId: string) => {
     setIsFetchingStudentPerf(true);
     try {
@@ -416,6 +510,118 @@ export default function TeacherDashboard() {
   }, [activeView]);
 
   const getToken = () => localStorage.getItem('token') || '';
+
+  // ============ AI Lesson Planner ============
+  const fetchLessonPlans = async () => {
+    try {
+      const res = await axios.get('http://localhost:5001/api/lessons', { headers: { Authorization: `Bearer ${getToken()}` } });
+      setLessonPlans(res.data.lessonPlans || []);
+    } catch (err) { console.error('Failed to fetch lesson plans:', err); }
+  };
+
+  const handleGenerateLesson = async () => {
+    if (!lessonTopic.trim()) { setLessonError('Please enter a topic.'); return; }
+    setIsGeneratingLesson(true);
+    setLessonError('');
+    try {
+      const res = await axios.post('http://localhost:5001/api/lessons', {
+        topic: lessonTopic, gradeLevel: lessonGrade, durationMins: lessonDuration,
+      }, { headers: { Authorization: `Bearer ${getToken()}` } });
+      setActiveLessonPlan(res.data.lessonPlan);
+      setLessonPlans((prev) => [res.data.lessonPlan, ...prev]);
+      setLessonTopic('');
+    } catch (err: any) {
+      setLessonError(err.response?.data?.error || 'Failed to generate lesson plan.');
+    } finally { setIsGeneratingLesson(false); }
+  };
+
+  const handleDeleteLesson = async (id: string) => {
+    try {
+      await axios.delete(`http://localhost:5001/api/lessons/${id}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+      setLessonPlans((prev) => prev.filter((p) => p._id !== id));
+      if (activeLessonPlan?._id === id) setActiveLessonPlan(null);
+    } catch (err) { console.error('Failed to delete lesson plan:', err); }
+  };
+
+  // ============ Attendance ============
+  const openAttendance = (classroom: any) => {
+    setAttendanceClassroom(classroom);
+    setPresentRoster([]);
+    const socket = socketRef.current;
+    if (socket) {
+      socket.emit('room:join', { classroomId: classroom._id, role: 'teacher', name: teacherName });
+      socket.emit('attendance:request', { classroomId: classroom._id });
+    }
+  };
+
+  // ============ Gradebook ============
+  const fetchGradebook = async (classroom: any) => {
+    setGradebookClassroom(classroom);
+    setIsFetchingGradebook(true);
+    setGradebook(null);
+    try {
+      const res = await axios.get(`http://localhost:5001/api/classrooms/${classroom._id}/gradebook`, { headers: { Authorization: `Bearer ${getToken()}` } });
+      setGradebook(res.data);
+    } catch (err) { console.error('Failed to fetch gradebook:', err); }
+    finally { setIsFetchingGradebook(false); }
+  };
+
+  const exportGradebookCSV = () => {
+    if (!gradebook) return;
+    const header = ['Name', 'Email', 'Quizzes Taken', 'Total Score', 'Total Max', 'Average %', 'Grade'];
+    const lines = gradebook.rows.map((r: any) => [r.name, r.email, r.quizzesTaken, r.totalScore, r.totalMax, r.averagePercent, r.grade].join(','));
+    const csv = [header.join(','), ...lines].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `gradebook_${gradebook.classroomName}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportGradebookPDF = async () => {
+    if (!gradebook) return;
+    const { default: jsPDF } = await import('jspdf');
+    const autoTable = (await import('jspdf-autotable')).default;
+    const doc = new jsPDF();
+    doc.setFontSize(16);
+    doc.text(`Gradebook — ${gradebook.classroomName}`, 14, 18);
+    doc.setFontSize(10);
+    doc.text(`Generated ${new Date().toLocaleString()}`, 14, 25);
+    autoTable(doc, {
+      startY: 30,
+      head: [['Name', 'Email', 'Quizzes', 'Score', 'Max', 'Avg %', 'Grade']],
+      body: gradebook.rows.map((r: any) => [r.name, r.email, r.quizzesTaken, r.totalScore, r.totalMax, `${r.averagePercent}%`, r.grade]),
+      headStyles: { fillColor: [39, 39, 42] },
+    });
+    doc.save(`gradebook_${gradebook.classroomName}.pdf`);
+  };
+
+  // ============ Analytics AI insights ============
+  const fetchInsights = async (classroomId: string) => {
+    setIsFetchingInsights(true);
+    setInsights(null);
+    try {
+      const res = await axios.get(`http://localhost:5001/api/classrooms/${classroomId}/insights`, { headers: { Authorization: `Bearer ${getToken()}` } });
+      setInsights(res.data);
+    } catch (err) { console.error('Failed to fetch insights:', err); }
+    finally { setIsFetchingInsights(false); }
+  };
+
+  useEffect(() => {
+    if (activeView === 'lesson-planner') fetchLessonPlans();
+  }, [activeView]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    const handler = (data: any) => {
+      if (attendanceClassroom && data.classroomId === attendanceClassroom._id) {
+        setPresentRoster(data.present || []);
+      }
+    };
+    socket.on('attendance:update', handler);
+    return () => { socket.off('attendance:update', handler); };
+  }, [attendanceClassroom]);
 
   const fetchClassrooms = async () => {
     try {
@@ -604,27 +810,33 @@ export default function TeacherDashboard() {
     { icon: <Users className="w-4 h-4" />, label: 'My Classrooms', view: 'classrooms' },
     { icon: <FileText className="w-4 h-4" />, label: 'Assignments', view: 'assignments' },
     { icon: <FileQuestion className="w-4 h-4" />, label: 'AI Grading (OCR)', view: 'ai-grading' },
+    { icon: <BookOpenCheck className="w-4 h-4" />, label: 'AI Lesson Planner', view: 'lesson-planner' },
+    { icon: <UserCheck className="w-4 h-4" />, label: 'Attendance', view: 'attendance' },
+    { icon: <Download className="w-4 h-4" />, label: 'Gradebook', view: 'gradebook' },
   ];
 
   return (
-    <div ref={containerRef} className="flex min-h-screen bg-[#0A0A0B] text-white overflow-hidden">
+    <div ref={containerRef} className="themed-surface flex min-h-screen bg-theme text-white overflow-hidden">
       {/* ======== SIDEBAR ======== */}
       <aside className="w-64 min-h-screen flex flex-col border-r border-white/5 bg-white/[0.02] backdrop-blur-xl flex-shrink-0 relative z-20">
         {/* Logo */}
-        <div className="p-5 border-b border-white/5 flex items-center gap-3">
-          <div className="p-2 bg-cyan-500/20 rounded-xl border border-cyan-500/30">
-            <Sparkles className="w-5 h-5 text-cyan-400" />
+        <div className="p-5 border-b border-white/5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-zinc-500/20 rounded-xl border border-zinc-500/30">
+              <Sparkles className="w-5 h-5 text-zinc-400" />
+            </div>
+            <h1 className="text-xl font-bold tracking-tight accent-gradient-text">
+              AxesAI
+            </h1>
           </div>
-          <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
-            AxesAI
-          </h1>
+          <ThemeToggle />
         </div>
 
         {/* Create Assignment CTA */}
         <div className="px-4 pt-5 pb-2">
           <button 
             onClick={() => { resetForm(); setActiveView('create-assignment'); }}
-            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-sm font-semibold hover:from-blue-600 hover:to-cyan-600 transition-all shadow-lg shadow-blue-500/20 cursor-pointer active:scale-95"
+            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-gradient-to-r from-zinc-500 to-zinc-500 text-white text-sm font-semibold hover:from-zinc-600 hover:to-zinc-600 transition-all shadow-lg shadow-zinc-500/20 cursor-pointer active:scale-95"
           >
             <Plus className="w-4 h-4" /> Create Assignment
           </button>
@@ -649,7 +861,7 @@ export default function TeacherDashboard() {
           <div className="pt-6">
             <button
               onClick={() => setIsFaceSetupOpen(true)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/5 border border-transparent transition-all cursor-pointer mb-2"
+              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-zinc-300 hover:bg-zinc-500/5 border border-transparent transition-all cursor-pointer mb-2"
             >
               <Camera className="w-4 h-4" /> Setup Face Login
             </button>
@@ -665,7 +877,7 @@ export default function TeacherDashboard() {
         {/* Profile footer */}
         <div className="p-4 border-t border-white/5">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center text-white text-sm font-bold">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-zinc-500 to-zinc-400 flex items-center justify-center text-white text-sm font-bold">
               {teacherName.charAt(0).toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
@@ -679,8 +891,8 @@ export default function TeacherDashboard() {
       {/* ======== MAIN CONTENT ======== */}
       <div className="flex-1 overflow-y-auto relative">
         {/* Ambient Lights */}
-        <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full bg-blue-500/8 blur-[130px] pointer-events-none" />
-        <div className="absolute bottom-[-10%] left-[-10%] w-[400px] h-[400px] rounded-full bg-cyan-500/8 blur-[120px] pointer-events-none" />
+        <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/8 blur-[130px] pointer-events-none" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[400px] h-[400px] rounded-full bg-zinc-500/8 blur-[120px] pointer-events-none" />
 
         <main ref={mainContentRef} className="relative z-10 p-6 md:p-10 max-w-5xl mx-auto">
 
@@ -723,9 +935,9 @@ export default function TeacherDashboard() {
                       </div>
                     </GlassPanel>
                     
-                    <GlassPanel className="p-6 flex items-center gap-4 border-cyan-500/10">
-                      <div className="p-3 bg-cyan-500/10 rounded-2xl">
-                        <CheckCircle2 className="w-6 h-6 text-cyan-400" />
+                    <GlassPanel className="p-6 flex items-center gap-4 border-zinc-500/10">
+                      <div className="p-3 bg-zinc-500/10 rounded-2xl">
+                        <CheckCircle2 className="w-6 h-6 text-zinc-400" />
                       </div>
                       <div>
                         <p className="text-2xl font-bold text-white">{homeSummary.assignmentsReviewed30Days}</p>
@@ -733,9 +945,9 @@ export default function TeacherDashboard() {
                       </div>
                     </GlassPanel>
 
-                    <GlassPanel className="p-6 flex items-center gap-4 border-purple-500/10">
-                      <div className="p-3 bg-purple-500/10 rounded-2xl">
-                        <FileText className="w-6 h-6 text-purple-400" />
+                    <GlassPanel className="p-6 flex items-center gap-4 border-zinc-500/10">
+                      <div className="p-3 bg-zinc-500/10 rounded-2xl">
+                        <FileText className="w-6 h-6 text-zinc-400" />
                       </div>
                       <div>
                         <p className="text-2xl font-bold text-white">{homeSummary.totalAssignmentsGraded}</p>
@@ -767,11 +979,11 @@ export default function TeacherDashboard() {
                         <div className="w-full md:w-60 flex items-center gap-3">
                           <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
                             <div 
-                              className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all" 
+                              className="h-full bg-gradient-to-r from-zinc-500 to-zinc-400 rounded-full transition-all" 
                               style={{ width: `${a.progressPercent}%` }} 
                             />
                           </div>
-                          <span className="text-xs font-mono text-cyan-300 whitespace-nowrap min-w-[45px] text-right">
+                          <span className="text-xs font-mono text-zinc-300 whitespace-nowrap min-w-[45px] text-right">
                             {a.submissionsCount}/{a.totalStudents} ({a.progressPercent.toFixed(0)}%)
                           </span>
                         </div>
@@ -824,7 +1036,7 @@ export default function TeacherDashboard() {
                     </GlassButton>
                     <div>
                       <h2 className="text-2xl font-bold text-white">{selectedClassroom.name}</h2>
-                      <p className="text-xs text-gray-400">Instructor: {teacherName} · Join Code: <strong className="text-cyan-300">{selectedClassroom.joinCode}</strong></p>
+                      <p className="text-xs text-gray-400">Instructor: {teacherName} · Join Code: <strong className="text-zinc-300">{selectedClassroom.joinCode}</strong></p>
                     </div>
                   </div>
 
@@ -840,7 +1052,7 @@ export default function TeacherDashboard() {
                         <div className="space-y-3">
                           <div className="flex justify-between text-sm">
                             <span className="text-gray-400">Join Code</span>
-                            <span className="font-bold text-cyan-300 tracking-wider">{selectedClassroom.joinCode}</span>
+                            <span className="font-bold text-zinc-300 tracking-wider">{selectedClassroom.joinCode}</span>
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-gray-400">Status</span>
@@ -856,12 +1068,12 @@ export default function TeacherDashboard() {
                       {/* Classroom Documents Card */}
                       <GlassPanel className="p-6">
                         <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                          <BookOpen className="w-5 h-5 text-cyan-400" /> Classroom Documents
+                          <BookOpen className="w-5 h-5 text-zinc-400" /> Classroom Documents
                         </h3>
                         {classroomDoc ? (
                           <div className="space-y-3">
-                            <div className="flex items-start gap-2.5 p-3 rounded-xl bg-cyan-500/5 border border-cyan-500/10 text-sm text-gray-300">
-                              <FileText className="w-5 h-5 text-cyan-400 mt-0.5 flex-shrink-0" />
+                            <div className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-500/5 border border-zinc-500/10 text-sm text-gray-300">
+                              <FileText className="w-5 h-5 text-zinc-400 mt-0.5 flex-shrink-0" />
                               <div className="min-w-0 flex-1">
                                 <p className="font-medium text-white truncate text-xs">{classroomDoc.title}</p>
                                 <p className="text-[10px] text-gray-500">Indexed successfully</p>
@@ -872,7 +1084,7 @@ export default function TeacherDashboard() {
                               <p className="font-semibold text-gray-300">PageIndex structure:</p>
                               {classroomDoc.pageIndex?.sections?.map((sec: any, sIdx: number) => (
                                 <div key={sIdx} className="pl-1">
-                                  <p className="font-medium text-cyan-300 truncate">{sec.title}</p>
+                                  <p className="font-medium text-zinc-300 truncate">{sec.title}</p>
                                   {sec.subsections?.map((sub: any, subIdx: number) => (
                                     <p key={subIdx} className="pl-3 text-[10px] text-gray-500 truncate">- {sub.title}</p>
                                   ))}
@@ -904,7 +1116,7 @@ export default function TeacherDashboard() {
                               className={`flex items-center justify-center gap-2 cursor-pointer border border-dashed rounded-xl p-3 text-xs font-semibold transition ${
                                 isUploadingDoc 
                                   ? 'bg-white/5 border-white/10 text-gray-500 cursor-not-allowed'
-                                  : 'bg-cyan-500/5 border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/10 hover:border-cyan-500/30'
+                                  : 'bg-zinc-500/5 border-zinc-500/20 text-zinc-400 hover:bg-zinc-500/10 hover:border-zinc-500/30'
                               }`}
                             >
                               {isUploadingDoc ? (
@@ -921,9 +1133,9 @@ export default function TeacherDashboard() {
                       </GlassPanel>
 
                       {/* Live Quiz Control Panel */}
-                      <GlassPanel className="p-6 border-cyan-500/20">
+                      <GlassPanel className="p-6 border-zinc-500/20">
                         <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                          <Sparkles className="w-5 h-5 text-cyan-400" /> Live Quiz Control
+                          <Sparkles className="w-5 h-5 text-zinc-400" /> Live Quiz Control
                         </h3>
                         {liveQuizActive ? (
                           <div className="space-y-4">
@@ -938,7 +1150,7 @@ export default function TeacherDashboard() {
                               </div>
                               <div className="flex justify-between text-sm">
                                 <span className="text-gray-400">Time Remaining:</span>
-                                <span className="font-bold text-cyan-300 font-mono">{liveQuizTimeRemaining}s</span>
+                                <span className="font-bold text-zinc-300 font-mono">{liveQuizTimeRemaining}s</span>
                               </div>
                             </div>
                             <GlassButton onClick={handleEndQuizEarly} className="w-full border-red-500/30 hover:bg-red-500/10 text-red-400">
@@ -952,7 +1164,7 @@ export default function TeacherDashboard() {
                               {liveQuizScoreboard.map((item) => (
                                 <div key={item.studentId} className="flex justify-between items-center text-xs text-gray-300 border-b border-white/5 pb-1">
                                   <span>#{item.rank} {item.name}</span>
-                                  <span className="font-mono text-cyan-300">{item.score} pts ({item.violationCount} v)</span>
+                                  <span className="font-mono text-zinc-300">{item.score} pts ({item.violationCount} v)</span>
                                 </div>
                               ))}
                             </div>
@@ -963,13 +1175,41 @@ export default function TeacherDashboard() {
                         ) : (
                           <div className="space-y-4">
                             <p className="text-xs text-gray-400">Create MCQ questions below and launch as a live quiz for all students in this room.</p>
-                            
+
+                            {/* AI Quiz Generator */}
+                            <div className="bg-gradient-to-br from-zinc-500/10 to-zinc-500/10 border border-zinc-500/20 rounded-xl p-4 space-y-3">
+                              <div className="flex items-center gap-2">
+                                <Sparkles className="w-4 h-4 text-zinc-400" />
+                                <span className="text-xs font-bold text-zinc-300 uppercase tracking-wider">Generate with AI</span>
+                              </div>
+                              <input
+                                type="text"
+                                value={aiQuizTopic}
+                                onChange={(e) => setAiQuizTopic(e.target.value)}
+                                placeholder="Topic (e.g. Photosynthesis) — leave blank to use uploaded notes"
+                                className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none focus:border-zinc-500/50 transition"
+                              />
+                              <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] text-gray-400"># Questions</span>
+                                  <button onClick={() => setAiQuizCount(Math.max(1, aiQuizCount - 1))} className="w-6 h-6 flex items-center justify-center bg-white/5 rounded-md text-gray-300 hover:bg-white/10"><Minus className="w-3 h-3" /></button>
+                                  <span className="text-sm text-white w-5 text-center">{aiQuizCount}</span>
+                                  <button onClick={() => setAiQuizCount(Math.min(15, aiQuizCount + 1))} className="w-6 h-6 flex items-center justify-center bg-white/5 rounded-md text-gray-300 hover:bg-white/10"><Plus className="w-3 h-3" /></button>
+                                </div>
+                                <GlassButton onClick={handleGenerateAIQuiz} disabled={isGeneratingAIQuiz} className="flex-1 text-xs flex items-center justify-center gap-2">
+                                  {isGeneratingAIQuiz ? (<><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…</>) : (<><Sparkles className="w-3.5 h-3.5" /> Generate Questions</>)}
+                                </GlassButton>
+                              </div>
+                              {aiQuizError && <p className="text-[11px] text-red-400">{aiQuizError}</p>}
+                              <p className="text-[10px] text-gray-500">AI writes the questions, 4 options, and marks the correct answer. Review/edit them below before launching.</p>
+                            </div>
+
                             {/* Inline MCQ Creator */}
                             <div className="space-y-4 max-h-[400px] overflow-y-auto pr-1">
                               {inlineQuizQuestions.map((q, qIdx) => (
                                 <div key={q.id} className="bg-white/[0.03] border border-white/8 rounded-xl p-4 space-y-3">
                                   <div className="flex items-center justify-between">
-                                    <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Q{qIdx + 1}</span>
+                                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Q{qIdx + 1}</span>
                                     {inlineQuizQuestions.length > 1 && (
                                       <button onClick={() => removeInlineQuestion(q.id)} className="text-gray-500 hover:text-red-400 transition cursor-pointer">
                                         <Trash2 className="w-3.5 h-3.5" />
@@ -982,7 +1222,7 @@ export default function TeacherDashboard() {
                                     value={q.prompt}
                                     onChange={(e) => updateInlineQuestion(q.id, 'prompt', e.target.value)}
                                     placeholder="Enter question..."
-                                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 outline-none focus:border-cyan-500/50 transition"
+                                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 outline-none focus:border-zinc-500/50 transition"
                                   />
                                   
                                   <div className="grid grid-cols-2 gap-2">
@@ -1009,7 +1249,7 @@ export default function TeacherDashboard() {
                                             }
                                           }}
                                           placeholder={`Option ${String.fromCharCode(65 + oIdx)}`}
-                                          className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-600 outline-none focus:border-cyan-500/50 transition min-w-0"
+                                          className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-600 outline-none focus:border-zinc-500/50 transition min-w-0"
                                         />
                                       </div>
                                     ))}
@@ -1037,7 +1277,7 @@ export default function TeacherDashboard() {
                               ))}
                             </div>
 
-                            <button onClick={addInlineQuestion} className="w-full flex items-center justify-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition cursor-pointer py-2 border border-dashed border-cyan-500/20 rounded-xl hover:border-cyan-500/40">
+                            <button onClick={addInlineQuestion} className="w-full flex items-center justify-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-300 transition cursor-pointer py-2 border border-dashed border-zinc-500/20 rounded-xl hover:border-zinc-500/40">
                               <Plus className="w-3.5 h-3.5" /> Add Question
                             </button>
 
@@ -1062,31 +1302,48 @@ export default function TeacherDashboard() {
                           <h3 className="text-lg font-bold text-white">Enrolled Students ({selectedClassroom.studentIds?.length || 0})</h3>
                         </div>
                         
-                        <input
-                          type="text"
-                          value={studentSearchQuery}
-                          onChange={(e) => setStudentSearchQuery(e.target.value)}
-                          placeholder="Search students..."
-                          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 outline-none focus:border-cyan-500/50 transition mb-4"
-                        />
+                        <div className="relative mb-4">
+                          <input
+                            type="text"
+                            value={studentSearchQuery}
+                            onChange={(e) => setStudentSearchQuery(e.target.value)}
+                            placeholder="Search all your students by name or email..."
+                            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 outline-none focus:border-zinc-500/50 transition"
+                          />
+                          {isSearching && (
+                            <Loader2 className="w-4 h-4 animate-spin text-zinc-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                          )}
+                        </div>
 
                         <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                          {selectedClassroom.studentIds && selectedClassroom.studentIds.length > 0 ? (
-                            selectedClassroom.studentIds
-                              .filter((student: any) => 
-                                student.name.toLowerCase().includes(studentSearchQuery.toLowerCase()) ||
-                                student.email.toLowerCase().includes(studentSearchQuery.toLowerCase())
-                              )
-                              .map((student: any) => (
-                                <div 
-                                  key={student._id} 
+                          {searchResults !== null ? (
+                            // Server-side search results (across every classroom this teacher owns)
+                            searchResults.length > 0 ? (
+                              searchResults.map((student: any) => (
+                                <div
+                                  key={student._id}
                                   onClick={() => fetchStudentPerformance(student._id)}
-                                  className="flex justify-between items-center text-sm text-gray-300 border-b border-white/5 pb-2 cursor-pointer hover:text-cyan-300 hover:border-cyan-500/20 transition-all"
+                                  className="flex justify-between items-center text-sm text-gray-300 border-b border-white/5 pb-2 cursor-pointer hover:text-zinc-300 hover:border-zinc-500/20 transition-all"
                                 >
                                   <span>{student.name}</span>
                                   <span className="text-xs text-gray-500">{student.email}</span>
                                 </div>
                               ))
+                            ) : (
+                              <p className="text-xs text-gray-500">{isSearching ? 'Searching…' : 'No students match your search.'}</p>
+                            )
+                          ) : selectedClassroom.studentIds && selectedClassroom.studentIds.length > 0 ? (
+                            // Default: students enrolled in the selected classroom
+                            selectedClassroom.studentIds.map((student: any) => (
+                              <div
+                                key={student._id}
+                                onClick={() => fetchStudentPerformance(student._id)}
+                                className="flex justify-between items-center text-sm text-gray-300 border-b border-white/5 pb-2 cursor-pointer hover:text-zinc-300 hover:border-zinc-500/20 transition-all"
+                              >
+                                <span>{student.name}</span>
+                                <span className="text-xs text-gray-500">{student.email}</span>
+                              </div>
+                            ))
                           ) : (
                             <p className="text-xs text-gray-500">No students enrolled yet.</p>
                           )}
@@ -1123,82 +1380,134 @@ export default function TeacherDashboard() {
                   {/* ---- Classroom Performance Analytics Section ---- */}
                   <div className="mt-8">
                     <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                      <LayoutDashboard className="w-5 h-5 text-purple-400" /> Class Performance Analytics
+                      <LayoutDashboard className="w-5 h-5 text-zinc-400" /> Class Performance Analytics
                     </h3>
                     
                     {isFetchingAnalytics ? (
                       <GlassPanel className="p-8 text-center">
-                        <Loader2 className="w-6 h-6 animate-spin mx-auto text-purple-400 mb-2" />
+                        <Loader2 className="w-6 h-6 animate-spin mx-auto text-zinc-400 mb-2" />
                         <p className="text-sm text-gray-400">Computing real-time analytics...</p>
                       </GlassPanel>
                     ) : classroomAnalytics ? (
-                      <div className="space-y-6">
-                        {/* Numerical Metrics Cards */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                          <GlassPanel className="p-4 text-center">
-                            <p className="text-2xl font-bold text-white">{classroomAnalytics.submissionRate.toFixed(0)}%</p>
-                            <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Submission Rate</p>
-                          </GlassPanel>
-                          <GlassPanel className="p-4 text-center">
-                            <p className="text-2xl font-bold text-white">{classroomAnalytics.averageScore ? classroomAnalytics.averageScore.toFixed(1) : '0'}</p>
-                            <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Average Score</p>
-                          </GlassPanel>
-                          <GlassPanel className="p-4 text-center">
-                            <p className="text-2xl font-bold text-white">{classroomAnalytics.medianScore ? classroomAnalytics.medianScore.toFixed(1) : '0'}</p>
-                            <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Median Score</p>
-                          </GlassPanel>
-                          <GlassPanel className="p-4 text-center">
-                            <p className="text-2xl font-bold text-white">{classroomAnalytics.topScore || '0'} / {classroomAnalytics.lowestScore || '0'}</p>
-                            <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Top / Low Score</p>
-                          </GlassPanel>
-                        </div>
-
-                        {/* Charts Area */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        {/* LEFT: performance summary */}
+                        <div className="lg:col-span-2 space-y-6">
                           <GlassPanel className="p-6">
-                            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Grade Distribution Band</h4>
-                            <div className="h-60 w-full">
-                              <ResponsiveContainer width="100%" height="100%">
-                                <BarChart
-                                  data={[
-                                    { name: 'Strong (>=8)', count: classroomAnalytics.gradeBands?.strong || 0, fill: '#10B981' },
-                                    { name: 'Average (5-7)', count: classroomAnalytics.gradeBands?.average || 0, fill: '#3B82F6' },
-                                    { name: 'At-Risk (<5)', count: classroomAnalytics.gradeBands?.atRisk || 0, fill: '#EF4444' }
-                                  ]}
-                                  margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                                >
-                                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                                  <XAxis dataKey="name" tick={{ fill: '#9CA3AF', fontSize: 10 }} />
-                                  <YAxis allowDecimals={false} tick={{ fill: '#9CA3AF', fontSize: 10 }} />
-                                  <Tooltip contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151', color: '#FFF' }} />
-                                  <Bar dataKey="count" radius={[8, 8, 0, 0]} />
-                                </BarChart>
-                              </ResponsiveContainer>
+                            <h4 className="text-sm font-bold text-white mb-5 text-center">Overall Class Performance Summary</h4>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 items-center">
+                              {/* Submission gauge */}
+                              <div className="flex flex-col items-center justify-center">
+                                <svg viewBox="0 0 160 92" className="w-40">
+                                  <defs>
+                                    <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="0">
+                                      <stop offset="0%" stopColor="#a1a1aa" />
+                                      <stop offset="100%" stopColor="#d4d4d8" />
+                                    </linearGradient>
+                                  </defs>
+                                  <path d="M12 82 A68 68 0 0 1 148 82" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="14" strokeLinecap="round" />
+                                  <path d="M12 82 A68 68 0 0 1 148 82" fill="none" stroke="url(#gaugeGrad)" strokeWidth="14" strokeLinecap="round"
+                                    strokeDasharray={`${(Math.min(classroomAnalytics.submissionRate, 100) / 100) * 213.6} 213.6`} />
+                                </svg>
+                                <div className="-mt-6 text-center">
+                                  <p className="text-2xl font-extrabold text-white">{classroomAnalytics.totalSubmissions}<span className="text-sm text-gray-500">/{classroomAnalytics.totalStudents}</span></p>
+                                  <p className="text-[10px] text-gray-500 uppercase tracking-wider">Submissions ({classroomAnalytics.submissionRate.toFixed(0)}%)</p>
+                                </div>
+                              </div>
+                              {/* Metric tiles */}
+                              <div className="sm:col-span-2 grid grid-cols-2 gap-3">
+                                <div className="rounded-2xl p-4 text-center bg-green-500/10 border border-green-500/20">
+                                  <p className="text-2xl font-extrabold text-green-400">{classroomAnalytics.averageScore ? classroomAnalytics.averageScore.toFixed(1) : '0'}</p>
+                                  <p className="text-[10px] text-gray-400 mt-1 uppercase tracking-wider">Average Score</p>
+                                </div>
+                                <div className="rounded-2xl p-4 text-center bg-zinc-500/10 border border-zinc-500/20">
+                                  <p className="text-2xl font-extrabold text-zinc-300">{classroomAnalytics.topScore || '0'}</p>
+                                  <p className="text-[10px] text-gray-400 mt-1 uppercase tracking-wider">Top Score</p>
+                                </div>
+                                <div className="rounded-2xl p-4 text-center bg-white/[0.03] border border-white/10">
+                                  <p className="text-2xl font-extrabold text-white">{classroomAnalytics.medianScore ? classroomAnalytics.medianScore.toFixed(1) : '0'}</p>
+                                  <p className="text-[10px] text-gray-400 mt-1 uppercase tracking-wider">Class Median</p>
+                                </div>
+                                <div className="rounded-2xl p-4 text-center bg-red-500/10 border border-red-500/20">
+                                  <p className="text-2xl font-extrabold text-red-400">{classroomAnalytics.lowestScore || '0'}</p>
+                                  <p className="text-[10px] text-gray-400 mt-1 uppercase tracking-wider">Lowest Score</p>
+                                </div>
+                              </div>
                             </div>
                           </GlassPanel>
 
+                          {/* Student Segmentation */}
                           <GlassPanel className="p-6">
-                            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Quiz Score Trends</h4>
-                            <div className="h-60 w-full">
-                              {classroomAnalytics.trend && classroomAnalytics.trend.length > 0 ? (
+                            <h4 className="text-sm font-bold text-white mb-4">Student Segmentation (by score band)</h4>
+                            <div className="grid grid-cols-3 gap-3">
+                              {[
+                                { label: 'Strong', sub: '≥ 8', count: classroomAnalytics.gradeBands?.strong || 0, cls: 'from-green-500/20 to-green-500/5 border-green-500/30 text-green-400' },
+                                { label: 'Average', sub: '5 – 7', count: classroomAnalytics.gradeBands?.average || 0, cls: 'from-yellow-500/20 to-yellow-500/5 border-yellow-500/30 text-yellow-400' },
+                                { label: 'At-Risk', sub: '< 5', count: classroomAnalytics.gradeBands?.atRisk || 0, cls: 'from-red-500/20 to-red-500/5 border-red-500/30 text-red-400' },
+                              ].map((b) => (
+                                <div key={b.label} className={`rounded-2xl p-5 text-center bg-gradient-to-b border ${b.cls}`}>
+                                  <p className="text-3xl font-extrabold">{b.count}</p>
+                                  <p className="text-sm font-bold text-white mt-1">{b.label}</p>
+                                  <p className="text-[10px] text-gray-400">{b.sub} marks</p>
+                                </div>
+                              ))}
+                            </div>
+                          </GlassPanel>
+
+                          {/* Trend */}
+                          {classroomAnalytics.trend && classroomAnalytics.trend.length > 0 && (
+                            <GlassPanel className="p-6">
+                              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Quiz Score Trend</h4>
+                              <div className="h-52 w-full">
                                 <ResponsiveContainer width="100%" height="100%">
-                                  <LineChart
-                                    data={classroomAnalytics.trend}
-                                    margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                                  >
+                                  <LineChart data={classroomAnalytics.trend} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                                     <XAxis dataKey="quizName" tick={{ fill: '#9CA3AF', fontSize: 10 }} />
                                     <YAxis tick={{ fill: '#9CA3AF', fontSize: 10 }} />
-                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151', color: '#FFF' }} />
-                                    <Line type="monotone" dataKey="avgScore" name="Avg Score" stroke="#8B5CF6" strokeWidth={3} activeDot={{ r: 8 }} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1a1826', borderColor: '#33314a', color: '#FFF', borderRadius: 12 }} />
+                                    <Line type="monotone" dataKey="avgScore" name="Avg Score" stroke="#a1a1aa" strokeWidth={3} dot={{ fill: '#d4d4d8', r: 4 }} activeDot={{ r: 7 }} />
                                   </LineChart>
                                 </ResponsiveContainer>
-                              ) : (
-                                <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                                  No trend data available yet.
-                                </div>
-                              )}
-                            </div>
+                              </div>
+                            </GlassPanel>
+                          )}
+                        </div>
+
+                        {/* RIGHT: AI insights */}
+                        <div className="space-y-6">
+                          <GlassPanel className="p-6">
+                            <h4 className="text-sm font-bold text-white mb-4 flex items-center gap-2"><Target className="w-4 h-4 text-zinc-400" /> Learning Gaps</h4>
+                            {isFetchingInsights ? (
+                              <div className="py-6 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-zinc-400" /><p className="text-[11px] text-gray-500 mt-2">AI analysing performance…</p></div>
+                            ) : insights?.learningGaps?.length > 0 ? (
+                              <div className="space-y-3">
+                                {insights.learningGaps.map((g: any, i: number) => (
+                                  <div key={i}>
+                                    <div className="flex justify-between text-xs mb-1"><span className="text-gray-300">{g.concept}</span><span className="font-bold text-zinc-300">{g.missRate}%</span></div>
+                                    <div className="h-1.5 rounded-full bg-white/5 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-zinc-500 to-zinc-500" style={{ width: `${Math.min(g.missRate, 100)}%` }} /></div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-gray-500">Run a quiz to unlock AI-detected learning gaps.</p>
+                            )}
+                          </GlassPanel>
+
+                          <GlassPanel className="p-6">
+                            <h4 className="text-sm font-bold text-white mb-4 flex items-center gap-2"><Lightbulb className="w-4 h-4 text-yellow-400" /> Recommended Actions</h4>
+                            {isFetchingInsights ? (
+                              <div className="py-6 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-zinc-400" /></div>
+                            ) : insights?.recommendedActions?.length > 0 ? (
+                              <ol className="space-y-2.5">
+                                {insights.recommendedActions.map((a: string, i: number) => (
+                                  <li key={i} className="flex gap-2.5 text-xs text-gray-300">
+                                    <span className="w-5 h-5 rounded-full bg-zinc-500/20 text-zinc-300 flex items-center justify-center flex-shrink-0 text-[10px] font-bold">{i + 1}</span>
+                                    <span className="leading-relaxed">{a}</span>
+                                  </li>
+                                ))}
+                              </ol>
+                            ) : (
+                              <p className="text-xs text-gray-500">AI teaching recommendations appear here after quizzes are taken.</p>
+                            )}
                           </GlassPanel>
                         </div>
                       </div>
@@ -1213,7 +1522,7 @@ export default function TeacherDashboard() {
                   <div className="mt-8">
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <FileText className="w-5 h-5 text-cyan-400" /> Assignments
+                        <FileText className="w-5 h-5 text-zinc-400" /> Assignments
                       </h3>
                       <GlassButton onClick={() => { resetForm(); setActiveView('create-assignment'); }} className="text-xs flex items-center gap-1.5">
                         <Plus className="w-3.5 h-3.5" /> Create New
@@ -1300,7 +1609,7 @@ export default function TeacherDashboard() {
                         <GlassPanel key={room._id} className="hover:border-white/20 transition-all cursor-pointer" onClick={() => setSelectedClassroom(room)}>
                           <h3 className="text-lg font-bold text-white mb-2">{room.name}</h3>
                           <div className="flex items-center gap-2 text-xs text-gray-400 mb-4 bg-white/5 py-1.5 px-3 rounded-full w-fit">
-                            <span>Join Code: <strong className="text-cyan-300 tracking-wider">{room.joinCode}</strong></span>
+                            <span>Join Code: <strong className="text-zinc-300 tracking-wider">{room.joinCode}</strong></span>
                             <button onClick={(e) => { e.stopPropagation(); copyCode(room.joinCode); }} className="cursor-pointer text-gray-400 hover:text-white transition">
                               {copiedCode === room.joinCode ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
                             </button>
@@ -1367,14 +1676,14 @@ export default function TeacherDashboard() {
             <div>
               <div className="mb-8">
                 <h2 className="text-2xl font-bold flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-cyan-400" /> Create Assignment
+                  <span className="w-2 h-2 rounded-full bg-zinc-400" /> Create Assignment
                 </h2>
                 <p className="text-sm text-gray-400">Set up a new assignment for your students.</p>
               </div>
 
               {/* Progress bar */}
               <div className="h-1 w-full bg-white/5 rounded-full mb-8 overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all" style={{ width: '100%' }} />
+                <div className="h-full bg-gradient-to-r from-zinc-500 to-zinc-400 rounded-full transition-all" style={{ width: '100%' }} />
               </div>
 
               <GlassPanel className="p-8">
@@ -1383,10 +1692,10 @@ export default function TeacherDashboard() {
 
                 {/* File Upload */}
                 <div className="mb-6">
-                  <div className="p-6 rounded-2xl border-2 border-dashed border-white/10 hover:border-cyan-500/30 transition-all bg-white/[0.02] flex flex-col items-center justify-center relative cursor-pointer group">
+                  <div className="p-6 rounded-2xl border-2 border-dashed border-white/10 hover:border-zinc-500/30 transition-all bg-white/[0.02] flex flex-col items-center justify-center relative cursor-pointer group">
                     <input type="file" accept=".pdf,.txt" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20" />
                     {isUploading ? (
-                      <div className="flex flex-col items-center gap-3 text-cyan-400">
+                      <div className="flex flex-col items-center gap-3 text-zinc-400">
                         <Loader2 className="w-6 h-6 animate-spin" />
                         <span className="text-sm font-medium">Extracting text from document...</span>
                       </div>
@@ -1398,8 +1707,8 @@ export default function TeacherDashboard() {
                       </div>
                     ) : (
                       <div className="flex flex-col items-center text-center">
-                        <div className="p-3 bg-white/5 rounded-full mb-3 group-hover:bg-cyan-500/10 transition-all">
-                          <UploadCloud className="w-6 h-6 text-gray-400 group-hover:text-cyan-400" />
+                        <div className="p-3 bg-white/5 rounded-full mb-3 group-hover:bg-zinc-500/10 transition-all">
+                          <UploadCloud className="w-6 h-6 text-gray-400 group-hover:text-zinc-400" />
                         </div>
                         <p className="text-sm font-medium text-white mb-1">Choose a file or drag & drop it here</p>
                         <p className="text-xs text-gray-500">PDF, TXT — upto 10MB</p>
@@ -1428,7 +1737,7 @@ export default function TeacherDashboard() {
                         <select
                           value={qt.type}
                           onChange={(e) => updateQuestionType(qt.id, 'type', e.target.value)}
-                          className="col-span-5 bg-transparent border border-white/10 rounded-lg px-3 py-2 text-sm text-white appearance-none cursor-pointer focus:outline-none focus:border-cyan-500/50"
+                          className="col-span-5 bg-transparent border border-white/10 rounded-lg px-3 py-2 text-sm text-white appearance-none cursor-pointer focus:outline-none focus:border-zinc-500/50"
                         >
                           {QUESTION_TYPE_OPTIONS.map(opt => (
                             <option key={opt.value} value={opt.value} className="bg-gray-900">{opt.label}</option>
@@ -1465,7 +1774,7 @@ export default function TeacherDashboard() {
                     ))}
                   </div>
 
-                  <button onClick={addQuestionType} className="mt-3 flex items-center gap-2 text-sm text-cyan-400 hover:text-cyan-300 transition cursor-pointer">
+                  <button onClick={addQuestionType} className="mt-3 flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-300 transition cursor-pointer">
                     <Plus className="w-4 h-4" /> Add Question Type
                   </button>
 
@@ -1576,6 +1885,17 @@ export default function TeacherDashboard() {
                                 'bg-red-500/10 text-red-400 border-red-500/20'
                               }`}>{q.difficulty}</span>
                             </div>
+
+                            {/* Answer Key (teacher-only) */}
+                            {q.answerKey && (
+                              <div className="mt-3 flex items-start gap-2 bg-emerald-500/[0.07] border border-emerald-500/20 rounded-lg px-3 py-2">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+                                <div>
+                                  <span className="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold">Answer Key</span>
+                                  <p className="text-[14px] text-emerald-100 leading-relaxed whitespace-pre-wrap">{q.answerKey}</p>
+                                </div>
+                              </div>
+                            )}
                           </div>
                           <div className="text-gray-500 font-medium whitespace-nowrap text-sm mt-1">
                             [{q.marks} Marks]
@@ -1588,7 +1908,7 @@ export default function TeacherDashboard() {
 
                 {(!viewingPaper.generatedPaper || viewingPaper.generatedPaper.length === 0) && (
                   <div className="text-center py-12">
-                    <Loader2 className="w-8 h-8 animate-spin text-cyan-400 mx-auto mb-4" />
+                    <Loader2 className="w-8 h-8 animate-spin text-zinc-400 mx-auto mb-4" />
                     <p className="text-gray-400">Paper is still being generated. Please check back shortly.</p>
                   </div>
                 )}
@@ -1709,7 +2029,7 @@ export default function TeacherDashboard() {
                         <h3 className="text-lg font-bold text-white">Grading Result</h3>
                         <div className="text-right">
                           <p className="text-xs text-gray-500">Total Score</p>
-                          <p className="text-2xl font-bold text-cyan-400">{gradingResult.totalScore}</p>
+                          <p className="text-2xl font-bold text-zinc-400">{gradingResult.totalScore}</p>
                         </div>
                       </div>
 
@@ -1744,7 +2064,7 @@ export default function TeacherDashboard() {
                           {Object.entries(gradingResult.criteriaScores || {}).map(([criterion, score]: any) => (
                             <div key={criterion} className="flex justify-between items-center text-sm text-gray-300 bg-white/[0.01] p-3 rounded-lg border border-white/5">
                               <span className="font-medium">{criterion}</span>
-                              <span className="font-bold text-cyan-400">{score}</span>
+                              <span className="font-bold text-zinc-400">{score}</span>
                             </div>
                           ))}
                         </div>
@@ -1752,7 +2072,7 @@ export default function TeacherDashboard() {
 
                       <div className="space-y-2">
                         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider block">Feedback / Suggestions</span>
-                        <p className="text-sm text-gray-300 bg-cyan-500/5 p-4 rounded-xl border border-cyan-500/10 leading-relaxed">
+                        <p className="text-sm text-gray-300 bg-zinc-500/5 p-4 rounded-xl border border-zinc-500/10 leading-relaxed">
                           {gradingResult.feedback}
                         </p>
                       </div>
@@ -1765,6 +2085,214 @@ export default function TeacherDashboard() {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ======== AI LESSON PLANNER ======== */}
+          {activeView === 'lesson-planner' && (
+            <div className="animate-fade-in">
+              <div className="mb-8">
+                <h2 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3"><BookOpenCheck className="w-7 h-7 text-zinc-400" /> AI Lesson Planner</h2>
+                <p className="text-gray-400 mt-1">Generate a structured, ready-to-teach lesson plan for any topic in seconds.</p>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-1 space-y-5">
+                  <GlassPanel className="p-6 space-y-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Topic</label>
+                      <input value={lessonTopic} onChange={(e) => setLessonTopic(e.target.value)} placeholder="e.g. Newton's Laws of Motion" className="glass-input w-full px-4 py-3 text-sm text-white placeholder-gray-600" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Level (optional)</label>
+                      <input value={lessonGrade} onChange={(e) => setLessonGrade(e.target.value)} placeholder="e.g. Grade 10 / Undergraduate" className="glass-input w-full px-4 py-3 text-sm text-white placeholder-gray-600" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Duration: {lessonDuration} min</label>
+                      <input type="range" min={15} max={120} step={5} value={lessonDuration} onChange={(e) => setLessonDuration(Number(e.target.value))} className="w-full accent-zinc-500" />
+                    </div>
+                    <GlassButton variant="accent" onClick={handleGenerateLesson} disabled={isGeneratingLesson} className="w-full flex items-center justify-center gap-2">
+                      {isGeneratingLesson ? (<><Loader2 className="w-4 h-4 animate-spin" /> Generating…</>) : (<><Sparkles className="w-4 h-4" /> Generate Lesson Plan</>)}
+                    </GlassButton>
+                    {lessonError && <p className="text-xs text-red-400">{lessonError}</p>}
+                  </GlassPanel>
+
+                  {lessonPlans.length > 0 && (
+                    <GlassPanel className="p-5">
+                      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Saved Plans</h4>
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                        {lessonPlans.map((p) => (
+                          <div key={p._id} className={`flex items-center justify-between p-2.5 rounded-lg cursor-pointer border ${activeLessonPlan?._id === p._id ? 'bg-zinc-500/10 border-zinc-500/30' : 'bg-white/[0.02] border-white/5 hover:bg-white/5'}`} onClick={() => setActiveLessonPlan(p)}>
+                            <span className="text-sm text-gray-200 truncate mr-2">{p.topic}</span>
+                            <button onClick={(e) => { e.stopPropagation(); handleDeleteLesson(p._id); }} className="text-gray-500 hover:text-red-400 flex-shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        ))}
+                      </div>
+                    </GlassPanel>
+                  )}
+                </div>
+
+                <div className="lg:col-span-2">
+                  {activeLessonPlan ? (
+                    <GlassPanel className="p-7 space-y-6">
+                      <div>
+                        <h3 className="text-2xl font-bold text-white">{activeLessonPlan.plan?.title || activeLessonPlan.topic}</h3>
+                        <p className="text-sm text-gray-400 mt-1">{activeLessonPlan.plan?.summary}</p>
+                      </div>
+                      {activeLessonPlan.plan?.objectives?.length > 0 && (
+                        <div>
+                          <h4 className="text-sm font-bold text-zinc-300 mb-2 flex items-center gap-2"><Target className="w-4 h-4" /> Learning Objectives</h4>
+                          <ul className="space-y-1.5">{activeLessonPlan.plan.objectives.map((o: string, i: number) => <li key={i} className="text-sm text-gray-300 flex gap-2"><Check className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />{o}</li>)}</ul>
+                        </div>
+                      )}
+                      <div className="grid sm:grid-cols-2 gap-4">
+                        {activeLessonPlan.plan?.prerequisites?.length > 0 && (
+                          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-4">
+                            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Prerequisites</h4>
+                            <ul className="space-y-1">{activeLessonPlan.plan.prerequisites.map((m: string, i: number) => <li key={i} className="text-xs text-gray-300">• {m}</li>)}</ul>
+                          </div>
+                        )}
+                        {activeLessonPlan.plan?.materials?.length > 0 && (
+                          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-4">
+                            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Materials</h4>
+                            <ul className="space-y-1">{activeLessonPlan.plan.materials.map((m: string, i: number) => <li key={i} className="text-xs text-gray-300">• {m}</li>)}</ul>
+                          </div>
+                        )}
+                      </div>
+                      {activeLessonPlan.plan?.outline?.length > 0 && (
+                        <div>
+                          <h4 className="text-sm font-bold text-zinc-300 mb-3">Lesson Flow</h4>
+                          <div className="space-y-3">
+                            {activeLessonPlan.plan.outline.map((ph: any, i: number) => (
+                              <div key={i} className="flex gap-4">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-8 h-8 rounded-full bg-zinc-500/20 border border-zinc-500/30 flex items-center justify-center text-xs font-bold text-zinc-300">{i + 1}</div>
+                                  {i < activeLessonPlan.plan.outline.length - 1 && <div className="w-px flex-1 bg-white/10 my-1" />}
+                                </div>
+                                <div className="flex-1 pb-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm font-semibold text-white">{ph.phase}</span>
+                                    <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">{ph.durationMins} min</span>
+                                  </div>
+                                  <ul className="mt-1.5 space-y-1">{(ph.activities || []).map((a: string, j: number) => <li key={j} className="text-xs text-gray-400">— {a}</li>)}</ul>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="grid sm:grid-cols-2 gap-4">
+                        {activeLessonPlan.plan?.assessmentIdeas?.length > 0 && (
+                          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-4">
+                            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Assessment Ideas</h4>
+                            <ul className="space-y-1">{activeLessonPlan.plan.assessmentIdeas.map((m: string, i: number) => <li key={i} className="text-xs text-gray-300">• {m}</li>)}</ul>
+                          </div>
+                        )}
+                        {activeLessonPlan.plan?.homework?.length > 0 && (
+                          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-4">
+                            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Homework</h4>
+                            <ul className="space-y-1">{activeLessonPlan.plan.homework.map((m: string, i: number) => <li key={i} className="text-xs text-gray-300">• {m}</li>)}</ul>
+                          </div>
+                        )}
+                      </div>
+                    </GlassPanel>
+                  ) : (
+                    <GlassPanel className="p-8 flex flex-col items-center justify-center text-center h-[400px]">
+                      <Lightbulb className="w-12 h-12 text-gray-600 mb-4" />
+                      <p className="text-sm text-gray-400 max-w-xs">Enter a topic and generate a full lesson plan, or pick a saved plan.</p>
+                    </GlassPanel>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ======== ATTENDANCE ======== */}
+          {activeView === 'attendance' && (
+            <div className="animate-fade-in">
+              <div className="mb-8">
+                <h2 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3"><UserCheck className="w-7 h-7 text-zinc-400" /> Live Attendance</h2>
+                <p className="text-gray-400 mt-1">Students are marked present in real time when they open the classroom. Select a class to view the live roster.</p>
+              </div>
+              <div className="flex flex-wrap gap-2 mb-6">
+                {classrooms.map((c) => (
+                  <button key={c._id} onClick={() => openAttendance(c)} className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${attendanceClassroom?._id === c._id ? 'bg-zinc-500/20 border-zinc-500/40 text-zinc-200' : 'bg-white/[0.02] border-white/10 text-gray-400 hover:text-white'}`}>{c.name}</button>
+                ))}
+              </div>
+              {attendanceClassroom ? (
+                <GlassPanel className="p-6">
+                  <div className="flex items-center justify-between mb-5">
+                    <h3 className="text-lg font-bold text-white">{attendanceClassroom.name}</h3>
+                    <span className="text-sm"><span className="text-green-400 font-bold">{presentRoster.length}</span> <span className="text-gray-500">/ {attendanceClassroom.studentIds?.length || 0} present</span></span>
+                  </div>
+                  <div className="space-y-2 max-h-[500px] overflow-y-auto">
+                    {(attendanceClassroom.studentIds || []).length === 0 ? (
+                      <p className="text-sm text-gray-500">No students enrolled yet.</p>
+                    ) : (attendanceClassroom.studentIds || []).map((s: any) => {
+                      const present = presentRoster.some((p) => p.studentId === s._id);
+                      return (
+                        <div key={s._id} className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                          <div className="flex items-center gap-3">
+                            <span className={`w-2.5 h-2.5 rounded-full ${present ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.6)]' : 'bg-gray-600'}`} />
+                            <div><p className="text-sm text-white font-medium">{s.name}</p><p className="text-[11px] text-gray-500">{s.email}</p></div>
+                          </div>
+                          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${present ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-white/5 text-gray-500 border border-white/5'}`}>{present ? 'Present' : 'Absent'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </GlassPanel>
+              ) : (
+                <GlassPanel className="p-8 text-center text-gray-400 text-sm h-[300px] flex items-center justify-center">Select a classroom above to see live attendance.</GlassPanel>
+              )}
+            </div>
+          )}
+
+          {/* ======== GRADEBOOK ======== */}
+          {activeView === 'gradebook' && (
+            <div className="animate-fade-in">
+              <div className="mb-8 flex items-start justify-between flex-wrap gap-4">
+                <div>
+                  <h2 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3"><FileSpreadsheet className="w-7 h-7 text-zinc-400" /> Gradebook</h2>
+                  <p className="text-gray-400 mt-1">Consolidated grades across all quizzes. Export to CSV or PDF.</p>
+                </div>
+                {gradebook && gradebook.rows?.length > 0 && (
+                  <div className="flex gap-2">
+                    <GlassButton onClick={exportGradebookCSV} className="text-xs flex items-center gap-1.5"><Download className="w-4 h-4" /> CSV</GlassButton>
+                    <GlassButton variant="accent" onClick={exportGradebookPDF} className="text-xs flex items-center gap-1.5"><Download className="w-4 h-4" /> PDF</GlassButton>
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2 mb-6">
+                {classrooms.map((c) => (
+                  <button key={c._id} onClick={() => fetchGradebook(c)} className={`px-4 py-2 rounded-xl text-sm font-medium border transition ${gradebookClassroom?._id === c._id ? 'bg-zinc-500/20 border-zinc-500/40 text-zinc-200' : 'bg-white/[0.02] border-white/10 text-gray-400 hover:text-white'}`}>{c.name}</button>
+                ))}
+              </div>
+              {isFetchingGradebook ? (
+                <GlassPanel className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-zinc-400" /></GlassPanel>
+              ) : gradebook ? (
+                <GlassPanel className="p-0 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead><tr className="border-b border-white/10 text-gray-400 text-xs uppercase tracking-wider">
+                        <th className="py-3.5 px-5">Student</th><th className="py-3.5 px-5">Quizzes</th><th className="py-3.5 px-5">Score</th><th className="py-3.5 px-5">Average</th><th className="py-3.5 px-5">Grade</th>
+                      </tr></thead>
+                      <tbody>
+                        {gradebook.rows.map((r: any) => (
+                          <tr key={r.studentId} className="border-b border-white/5 hover:bg-white/[0.02]">
+                            <td className="py-3.5 px-5"><p className="text-white font-medium">{r.name}</p><p className="text-[11px] text-gray-500">{r.email}</p></td>
+                            <td className="py-3.5 px-5 text-gray-300">{r.quizzesTaken}</td>
+                            <td className="py-3.5 px-5 text-gray-300">{r.totalScore}/{r.totalMax}</td>
+                            <td className="py-3.5 px-5"><span className="font-bold text-white">{r.averagePercent}%</span></td>
+                            <td className="py-3.5 px-5"><span className={`px-2.5 py-1 rounded-full text-xs font-bold ${r.grade === 'A' ? 'bg-green-500/15 text-green-400' : r.grade === 'B' ? 'bg-zinc-500/15 text-zinc-300' : r.grade === 'C' ? 'bg-yellow-500/15 text-yellow-400' : r.grade === 'D' ? 'bg-red-500/15 text-red-400' : 'bg-white/5 text-gray-500'}`}>{r.grade}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </GlassPanel>
+              ) : (
+                <GlassPanel className="p-8 text-center text-gray-400 text-sm h-[300px] flex items-center justify-center">Select a classroom above to load its gradebook.</GlassPanel>
+              )}
             </div>
           )}
 
@@ -1838,11 +2366,11 @@ export default function TeacherDashboard() {
               {/* Statistics & Trend */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <GlassPanel className="p-4 text-center">
-                  <p className="text-xl font-bold text-cyan-400">{(selectedStudentPerf.averageScore || 0).toFixed(1)}</p>
+                  <p className="text-xl font-bold text-zinc-400">{(selectedStudentPerf.averageScore || 0).toFixed(1)}</p>
                   <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Average Score</p>
                 </GlassPanel>
                 <GlassPanel className="p-4 text-center">
-                  <p className="text-xl font-bold text-purple-400">{selectedStudentPerf.totalQuizzes}</p>
+                  <p className="text-xl font-bold text-zinc-400">{selectedStudentPerf.totalQuizzes}</p>
                   <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Quizzes Taken</p>
                 </GlassPanel>
                 <GlassPanel className="p-4 text-center">
@@ -1869,7 +2397,7 @@ export default function TeacherDashboard() {
                         <XAxis dataKey="quizName" tick={{ fill: '#9CA3AF', fontSize: 10 }} />
                         <YAxis tick={{ fill: '#9CA3AF', fontSize: 10 }} />
                         <Tooltip contentStyle={{ backgroundColor: '#1F2937', borderColor: '#374151', color: '#FFF' }} />
-                        <Line type="monotone" dataKey="score" name="Score" stroke="#06B6D4" strokeWidth={3} />
+                        <Line type="monotone" dataKey="score" name="Score" stroke="#a1a1aa" strokeWidth={3} />
                       </LineChart>
                     </ResponsiveContainer>
                   ) : (
@@ -1889,7 +2417,7 @@ export default function TeacherDashboard() {
                       <div key={idx} className="p-3 bg-white/[0.02] border border-white/5 rounded-xl space-y-1">
                         <div className="flex justify-between text-xs">
                           <span className="font-semibold text-white">{sub.quizName}</span>
-                          <span className="font-mono text-cyan-400">Score: {sub.score} · Violations: {sub.violations}</span>
+                          <span className="font-mono text-zinc-400">Score: {sub.score} · Violations: {sub.violations}</span>
                         </div>
                         <p className="text-xs text-gray-400 italic">"{sub.feedback}"</p>
                       </div>
@@ -1922,9 +2450,9 @@ export default function TeacherDashboard() {
                 </button>
               </div>
 
-              <div className="flex justify-between items-center bg-cyan-500/5 border border-cyan-500/10 rounded-xl p-4">
+              <div className="flex justify-between items-center bg-zinc-500/5 border border-zinc-500/10 rounded-xl p-4">
                 <span className="text-sm font-semibold text-gray-300">Overall Oral Score</span>
-                <span className="text-xl font-bold text-cyan-400">{selectedVivaReview.score} / {selectedVivaReview.maxScore}</span>
+                <span className="text-xl font-bold text-zinc-400">{selectedVivaReview.score} / {selectedVivaReview.maxScore}</span>
               </div>
 
               <div className="space-y-2">
@@ -1933,11 +2461,11 @@ export default function TeacherDashboard() {
                   {selectedVivaReview.transcript.map((exchange: any, idx: number) => (
                     <div key={idx} className={`p-4 rounded-xl border ${
                       exchange.role === 'agent' 
-                        ? 'bg-purple-500/5 border-purple-500/10' 
-                        : 'bg-cyan-500/5 border-cyan-500/10'
+                        ? 'bg-zinc-500/5 border-zinc-500/10' 
+                        : 'bg-zinc-500/5 border-zinc-500/10'
                     }`}>
                       <div className="flex justify-between items-center mb-1 text-xs font-bold uppercase">
-                        <span className={exchange.role === 'agent' ? 'text-purple-400' : 'text-cyan-400'}>
+                        <span className={exchange.role === 'agent' ? 'text-zinc-400' : 'text-zinc-400'}>
                           {exchange.role === 'agent' ? '🤖 AI Examiner' : '👨‍🎓 Student'}
                         </span>
                         {exchange.score !== undefined && (

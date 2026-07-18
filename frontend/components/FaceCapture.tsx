@@ -113,10 +113,10 @@ export default function FaceCapture({ mode, onCaptureComplete, onCancel }: FaceC
   };
 
   return (
-    <GlassPanel className="relative p-6 max-w-md w-full border-white/10 bg-[#0F0F11]/90 backdrop-blur-xl rounded-2xl overflow-hidden shadow-2xl">
+    <GlassPanel className="relative p-6 max-w-md w-full rounded-2xl overflow-hidden shadow-2xl">
       <div className="flex justify-between items-center mb-4">
         <div>
-          <div className="flex items-center gap-1.5 text-cyan-400 text-xs font-semibold tracking-wide uppercase mb-1">
+          <div className="flex items-center gap-1.5 text-zinc-400 text-xs font-semibold tracking-wide uppercase mb-1">
             <Sparkles className="w-3.5 h-3.5" />
             <span>{mode === 'register' ? 'Face Registration' : 'Face Verification'}</span>
           </div>
@@ -150,8 +150,8 @@ export default function FaceCapture({ mode, onCaptureComplete, onCancel }: FaceC
         <canvas ref={canvasRef} className="hidden" />
 
         {/* Grid Overlay / Guide for Face Placement */}
-        <div className="absolute inset-0 border-[2px] border-cyan-400/20 rounded-lg pointer-events-none flex items-center justify-center">
-          <div className="w-40 h-40 border-[2px] border-dashed border-cyan-400/40 rounded-full animate-pulse" />
+        <div className="absolute inset-0 border-[2px] border-zinc-400/20 rounded-lg pointer-events-none flex items-center justify-center">
+          <div className="w-40 h-40 border-[2px] border-dashed border-zinc-400/40 rounded-full animate-pulse" />
         </div>
 
         {/* Capturing Status overlay */}
@@ -165,14 +165,14 @@ export default function FaceCapture({ mode, onCaptureComplete, onCancel }: FaceC
                 <p className="text-xs text-gray-400 mb-4">Tilt or turn your head slightly...</p>
                 <div className="w-32 bg-white/10 h-1.5 rounded-full overflow-hidden">
                   <div
-                    className="bg-cyan-400 h-full transition-all duration-300"
+                    className="bg-zinc-400 h-full transition-all duration-300"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
               </>
             ) : (
               <>
-                <RefreshCw className="w-6 h-6 text-cyan-400 animate-spin mb-2" />
+                <RefreshCw className="w-6 h-6 text-zinc-400 animate-spin mb-2" />
                 <p className="text-sm font-semibold text-white">Analyzing live webcam feed...</p>
               </>
             )}

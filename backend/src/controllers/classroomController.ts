@@ -113,7 +113,7 @@ import QuizResult from '../models/QuizResult.js';
 
 export const getClassroomAnalytics = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
     if (!mongoose.Types.ObjectId.isValid(id)) {
       res.status(400).json({ message: 'Invalid classroom ID' });
       return;
@@ -239,7 +239,7 @@ export const searchStudents = async (req: AuthRequest, res: Response): Promise<v
 
 export const getStudentPerformance = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { studentId } = req.params;
+    const studentId = String(req.params.studentId);
     if (!mongoose.Types.ObjectId.isValid(studentId)) {
       res.status(400).json({ message: 'Invalid student ID' });
       return;
@@ -275,5 +275,117 @@ export const getStudentPerformance = async (req: AuthRequest, res: Response): Pr
   } catch (error: any) {
     console.error('Failed to fetch student performance:', error);
     res.status(500).json({ message: 'Failed to fetch student performance', error: error.message });
+  }
+};
+
+import { analyzeLearningGaps } from '../services/aiService.js';
+
+// Gradebook: per-student performance rows for a classroom (for CSV/PDF export)
+export const getGradebook = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid classroom ID' });
+      return;
+    }
+    const classroom = await Classroom.findById(id).populate('studentIds', 'name email');
+    if (!classroom) {
+      res.status(404).json({ message: 'Classroom not found' });
+      return;
+    }
+
+    const results = await QuizResult.find({ classroomId: new mongoose.Types.ObjectId(id) }).sort({ submittedAt: 1 });
+
+    // Group results by student
+    const byStudent: Record<string, any> = {};
+    for (const r of results) {
+      const sid = r.studentId.toString();
+      if (!byStudent[sid]) byStudent[sid] = { name: r.studentName, quizzes: [], totalScore: 0, totalMax: 0 };
+      const max = r.maxScore || r.answers.reduce((s, a) => s + (a.maxMarks || 0), 0);
+      byStudent[sid].quizzes.push({ score: r.totalScore, max, submittedAt: r.submittedAt });
+      byStudent[sid].totalScore += r.totalScore;
+      byStudent[sid].totalMax += max;
+    }
+
+    const rows = (classroom.studentIds as any[]).map((stu: any) => {
+      const agg = byStudent[stu._id.toString()];
+      const quizzesTaken = agg ? agg.quizzes.length : 0;
+      const pct = agg && agg.totalMax > 0 ? Math.round((agg.totalScore / agg.totalMax) * 100) : 0;
+      return {
+        studentId: stu._id,
+        name: stu.name,
+        email: stu.email,
+        quizzesTaken,
+        totalScore: agg ? agg.totalScore : 0,
+        totalMax: agg ? agg.totalMax : 0,
+        averagePercent: pct,
+        grade: pct >= 85 ? 'A' : pct >= 70 ? 'B' : pct >= 50 ? 'C' : quizzesTaken > 0 ? 'D' : '—',
+      };
+    });
+
+    res.status(200).json({ classroomName: classroom.name, rows });
+  } catch (error: any) {
+    console.error('Failed to build gradebook:', error);
+    res.status(500).json({ message: 'Failed to build gradebook', error: error.message });
+  }
+};
+
+// AI Insights: learning gaps + recommended actions from quiz performance
+export const getClassroomInsights = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid classroom ID' });
+      return;
+    }
+    const classroom = await Classroom.findById(id);
+    if (!classroom) {
+      res.status(404).json({ message: 'Classroom not found' });
+      return;
+    }
+
+    const results = await QuizResult.find({ classroomId: new mongoose.Types.ObjectId(id) });
+    if (results.length === 0) {
+      res.status(200).json({ learningGaps: [], recommendedActions: [], hasData: false });
+      return;
+    }
+
+    // Aggregate miss-rate per question prompt
+    const qMap: Record<string, { prompt: string; wrong: number; total: number }> = {};
+    const studentAgg: Record<string, { name: string; score: number; max: number }> = {};
+    for (const r of results) {
+      const sid = r.studentId.toString();
+      if (!studentAgg[sid]) studentAgg[sid] = { name: r.studentName, score: 0, max: 0 };
+      for (const a of r.answers) {
+        if (!a.prompt) continue;
+        const key = a.prompt.trim().toLowerCase();
+        if (!qMap[key]) qMap[key] = { prompt: a.prompt, wrong: 0, total: 0 };
+        qMap[key].total += 1;
+        if ((a.score || 0) <= 0) qMap[key].wrong += 1;
+        studentAgg[sid].score += a.score || 0;
+        studentAgg[sid].max += a.maxMarks || 0;
+      }
+    }
+
+    const questionStats = Object.values(qMap)
+      .map((q) => ({ prompt: q.prompt, missRate: q.total > 0 ? Math.round((q.wrong / q.total) * 100) : 0 }))
+      .sort((a, b) => b.missRate - a.missRate)
+      .slice(0, 12);
+
+    const studentStats = Object.values(studentAgg).map((s) => ({
+      name: s.name,
+      avgPercent: s.max > 0 ? Math.round((s.score / s.max) * 100) : 0,
+    }));
+
+    if (questionStats.length === 0) {
+      res.status(200).json({ learningGaps: [], recommendedActions: [], hasData: false });
+      return;
+    }
+
+    const insights = await analyzeLearningGaps({ classroomName: classroom.name, questionStats, studentStats });
+    res.status(200).json({ ...insights, hasData: true });
+  } catch (error: any) {
+    console.error('Failed to build insights:', error);
+    res.status(500).json({ message: 'Failed to build insights', error: error.message });
   }
 };

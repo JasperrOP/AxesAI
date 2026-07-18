@@ -5,6 +5,7 @@ import { PlusCircle, FileText, LayoutDashboard, Settings, Layers, Loader2, Check
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import { useAssignmentStore } from '../../store/useAssignmentStore';
+import { ThemeToggle } from '../../components/ThemeToggle';
 
 const socket = io('http://localhost:5001');
 
@@ -96,18 +97,21 @@ export default function CreatorPage() {
   };
 
   return (
-    <main className="flex min-h-screen relative overflow-hidden bg-[#0A0A0A]">
-      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-orange-500/10 blur-[120px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] rounded-full bg-blue-500/10 blur-[140px] pointer-events-none" />
+    <main className="themed-surface flex min-h-screen relative overflow-hidden bg-theme text-white">
+      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/10 blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] rounded-full bg-zinc-500/10 blur-[140px] pointer-events-none" />
 
       <aside className="w-64 glass-sidebar flex flex-col relative z-10 border-r border-white/5 bg-white/[0.02] backdrop-blur-xl">
-        <div className="p-6 border-b border-white/5 flex items-center gap-3">
-          <div className="p-2 bg-orange-500/20 rounded-xl border border-orange-500/30">
-            <Layers className="w-5 h-5 text-orange-500" />
+        <div className="p-6 border-b border-white/5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-zinc-500/20 rounded-xl border border-zinc-500/30">
+              <Layers className="w-5 h-5 text-zinc-500" />
+            </div>
+            <h1 className="text-xl font-bold tracking-tight accent-gradient-text">
+              AxesAI
+            </h1>
           </div>
-          <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
-            AxesAI
-          </h1>
+          <ThemeToggle />
         </div>
 
         <nav className="flex-1 p-4 space-y-1.5 mt-4">
@@ -126,7 +130,7 @@ export default function CreatorPage() {
       <section className="flex-1 p-8 overflow-y-auto relative z-10 flex flex-col justify-start items-center pt-16">
         
         {status !== 'completed' ? (
-          <div className="w-full max-w-2xl bg-[#111111]/80 backdrop-blur-2xl border border-white/10 rounded-2xl p-8 transition-all shadow-2xl">
+          <div className="w-full max-w-2xl glass-panel p-8 transition-all shadow-2xl">
             <header className="mb-6">
               <h2 className="text-2xl font-bold text-white mb-1">Create New Assessment</h2>
               <p className="text-sm text-gray-400">Deploy elite background workers powered by Groq LPUs.</p>
@@ -142,7 +146,7 @@ export default function CreatorPage() {
                     type="number"
                     value={totalQuestions || ''}
                     onChange={(e) => updateForm('totalQuestions', e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 focus:border-orange-500/50 rounded-xl p-3 text-white placeholder-gray-600 outline-none transition-all"
+                    className="w-full bg-white/5 border border-white/10 focus:border-zinc-500/50 rounded-xl p-3 text-white placeholder-gray-600 outline-none transition-all"
                     placeholder="e.g. 10"
                   />
                 </div>
@@ -152,7 +156,7 @@ export default function CreatorPage() {
                     type="number"
                     value={totalMarks || ''}
                     onChange={(e) => updateForm('totalMarks', e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 focus:border-orange-500/50 rounded-xl p-3 text-white placeholder-gray-600 outline-none transition-all"
+                    className="w-full bg-white/5 border border-white/10 focus:border-zinc-500/50 rounded-xl p-3 text-white placeholder-gray-600 outline-none transition-all"
                     placeholder="e.g. 50"
                   />
                 </div>
@@ -163,12 +167,12 @@ export default function CreatorPage() {
                 <textarea 
                   value={additionalInstructions}
                   onChange={(e) => updateForm('additionalInstructions', e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 focus:border-orange-500/50 rounded-xl p-4 text-white placeholder-gray-600 outline-none min-h-[100px] text-sm resize-none transition-all"
+                  className="w-full bg-white/5 border border-white/10 focus:border-zinc-500/50 rounded-xl p-4 text-white placeholder-gray-600 outline-none min-h-[100px] text-sm resize-none transition-all"
                   placeholder="e.g., Generate a question paper for 8th grade science focusing on cell biology..."
                 />
               </div>
 
-              <div className="mt-4 p-5 rounded-xl border-2 border-dashed border-white/10 hover:border-orange-500/50 transition-all bg-white/5 flex flex-col items-center justify-center relative cursor-pointer group">
+              <div className="mt-4 p-5 rounded-xl border-2 border-dashed border-white/10 hover:border-zinc-500/50 transition-all bg-white/5 flex flex-col items-center justify-center relative cursor-pointer group">
                 <input 
                   type="file" 
                   accept=".pdf"
@@ -177,7 +181,7 @@ export default function CreatorPage() {
                 />
                 
                 {isUploading ? (
-                  <div className="flex flex-col items-center gap-3 text-orange-500">
+                  <div className="flex flex-col items-center gap-3 text-zinc-500">
                     <Loader2 className="w-6 h-6 animate-spin" />
                     <span className="text-sm font-medium">Extracting text via LangChain...</span>
                   </div>
@@ -189,8 +193,8 @@ export default function CreatorPage() {
                   </div>
                 ) : (
                   <div className="flex flex-col items-center text-center">
-                    <div className="p-3 bg-white/5 rounded-full mb-3 group-hover:bg-orange-500/10 group-hover:text-orange-500 transition-all">
-                      <UploadCloud className="w-6 h-6 text-gray-400 group-hover:text-orange-500" />
+                    <div className="p-3 bg-white/5 rounded-full mb-3 group-hover:bg-zinc-500/10 group-hover:text-zinc-500 transition-all">
+                      <UploadCloud className="w-6 h-6 text-gray-400 group-hover:text-zinc-500" />
                     </div>
                     <p className="text-sm font-medium text-white mb-1">Upload Syllabus or Notes (PDF)</p>
                     <p className="text-xs text-gray-500">Drag & drop or click to browse</p>
@@ -231,7 +235,7 @@ export default function CreatorPage() {
                 <button onClick={handleReset} className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white text-sm font-medium border border-white/10 transition-all">
                   Create Another
                 </button>
-                <button className="px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-500/90 text-white text-sm font-medium flex items-center gap-2 transition-all shadow-lg shadow-orange-500/20">
+                <button className="px-4 py-2 rounded-lg bg-zinc-500 hover:bg-zinc-500/90 text-white text-sm font-medium flex items-center gap-2 transition-all shadow-lg shadow-zinc-500/20">
                   <Download className="w-4 h-4" /> Export PDF
                 </button>
               </div>

@@ -21,6 +21,17 @@ interface ActiveSession {
 const activeSessions: Record<string, ActiveSession> = {};
 const activeTimers: Record<string, ReturnType<typeof setInterval>> = {};
 
+// Live attendance presence: which students are currently connected to each classroom
+const roomPresence: Record<string, Record<string, { name: string; socketId: string; joinedAt: Date }>> = {};
+const socketMeta: Record<string, { classroomId: string; studentId?: string; role: string; name: string }> = {};
+
+const presenceRoster = (classroomId: string) =>
+  Object.entries(roomPresence[classroomId] || {}).map(([studentId, v]) => ({
+    studentId,
+    name: v.name,
+    joinedAt: v.joinedAt,
+  }));
+
 export const initSocketConfig = (io: Server) => {
   io.on('connection', (socket: Socket) => {
     console.log(`User connected: ${socket.id}`);
@@ -30,6 +41,15 @@ export const initSocketConfig = (io: Server) => {
       const roomName = `class_${classroomId}`;
       socket.join(roomName);
       console.log(`${name} (${role}) joined room: ${roomName}`);
+
+      // Track presence for live attendance
+      socketMeta[socket.id] = { classroomId, studentId, role, name };
+      if (role === 'student' && studentId) {
+        if (!roomPresence[classroomId]) roomPresence[classroomId] = {};
+        roomPresence[classroomId][studentId] = { name, socketId: socket.id, joinedAt: new Date() };
+      }
+      // Broadcast the updated roster to everyone in the room (teacher dashboard listens)
+      io.to(roomName).emit('attendance:update', { classroomId, present: presenceRoster(classroomId) });
 
       // Notify others in the room
       socket.to(roomName).emit('room:user_joined', { socketId: socket.id, name, role });
@@ -256,9 +276,24 @@ export const initSocketConfig = (io: Server) => {
       await endQuizSession(io, roomName, classroomId);
     });
 
+    // 6b. Teacher requests current attendance roster on demand
+    socket.on('attendance:request', ({ classroomId }) => {
+      socket.emit('attendance:update', { classroomId, present: presenceRoster(classroomId) });
+    });
+
     // 7. Disconnection clean up
     socket.on('disconnect', () => {
       console.log(`User disconnected: ${socket.id}`);
+      const meta = socketMeta[socket.id];
+      if (meta) {
+        const { classroomId, studentId, role } = meta;
+        // Only drop from presence if this exact socket owned the student slot
+        if (role === 'student' && studentId && roomPresence[classroomId]?.[studentId]?.socketId === socket.id) {
+          delete roomPresence[classroomId][studentId];
+          io.to(`class_${classroomId}`).emit('attendance:update', { classroomId, present: presenceRoster(classroomId) });
+        }
+        delete socketMeta[socket.id];
+      }
     });
   });
 };
@@ -327,6 +362,7 @@ const endQuizSession = async (io: Server, roomName: string, classroomId: string)
     for (const [studentId, data] of Object.entries(session.studentAnswers)) {
       const studentAnswers = [];
       let totalScore = 0;
+      let maxScore = 0;
 
       for (let i = 0; i < session.questions.length; i++) {
         const question = session.questions[i];
@@ -335,17 +371,21 @@ const endQuizSession = async (io: Server, roomName: string, classroomId: string)
         let status: 'graded' | 'pending_review' = 'graded';
 
         if (question.type === 'mcq') {
-          const isCorrect = studentAns.trim().toLowerCase() === question.answerKey.trim().toLowerCase();
+          const isCorrect = studentAns.trim().toLowerCase() === (question.answerKey || '').trim().toLowerCase();
           score = isCorrect ? question.marks : 0;
         } else {
           status = 'pending_review';
         }
 
         totalScore += score;
+        maxScore += question.marks || 0;
         studentAnswers.push({
           questionId: question._id?.toString() || String(i),
+          prompt: question.prompt || '',
+          correctAnswer: question.answerKey || '',
           studentAnswer: studentAns,
           score,
+          maxMarks: question.marks || 0,
           status
         });
       }
@@ -357,7 +397,8 @@ const endQuizSession = async (io: Server, roomName: string, classroomId: string)
         studentName: data.name,
         answers: studentAnswers,
         violations: data.violations,
-        totalScore
+        totalScore,
+        maxScore
       });
 
       scoreboardData.push({

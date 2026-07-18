@@ -156,14 +156,14 @@ export default function ClassroomChat({ classroomId, socket }: ClassroomChatProp
   };
 
   return (
-    <GlassPanel className="flex flex-col h-[500px] border-white/10 bg-[#0F0F11]/60 backdrop-blur-md rounded-2xl overflow-hidden shadow-xl">
+    <GlassPanel className="flex flex-col h-[600px] rounded-2xl overflow-hidden shadow-xl !p-0">
       {/* Header */}
       <div className="px-5 py-4 border-b border-white/5 bg-white/5 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-cyan-400" />
+          <Sparkles className="w-4 h-4 text-zinc-400" />
           <span className="text-sm font-semibold text-white">Live Classroom Chat</span>
         </div>
-        <span className="text-[10px] bg-cyan-500/10 text-cyan-400 px-2.5 py-0.5 rounded-full border border-cyan-500/20 uppercase font-medium">
+        <span className="text-[10px] bg-zinc-500/10 text-zinc-400 px-2.5 py-0.5 rounded-full border border-zinc-500/20 uppercase font-medium">
           Connected
         </span>
       </div>
@@ -178,7 +178,7 @@ export default function ClassroomChat({ classroomId, socket }: ClassroomChatProp
 
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-gray-500">
-            <User className="w-8 h-8 mb-2 opacity-30 text-cyan-400" />
+            <User className="w-8 h-8 mb-2 opacity-30 text-zinc-400" />
             <p className="text-sm">No messages yet. Start the conversation!</p>
           </div>
         ) : (
@@ -193,7 +193,7 @@ export default function ClassroomChat({ classroomId, socket }: ClassroomChatProp
                   <span className="font-semibold">{msg.senderName}</span>
                   <span className={`text-[9px] uppercase px-1.5 py-0.2 rounded font-semibold ${
                     isTeacher 
-                      ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-500/20' 
+                      ? 'bg-zinc-500/25 text-zinc-300 border border-zinc-500/20' 
                       : 'bg-white/5 text-gray-300 border border-white/5'
                   }`}>
                     {msg.senderRole}
@@ -206,7 +206,7 @@ export default function ClassroomChat({ classroomId, socket }: ClassroomChatProp
                 {/* Message Bubble */}
                 <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm ${
                   isMe 
-                    ? 'bg-cyan-600/90 text-white rounded-tr-none' 
+                    ? 'bg-zinc-600/90 text-white rounded-tr-none' 
                     : 'bg-white/5 border border-white/10 text-gray-100 rounded-tl-none'
                 }`}>
                   {msg.content && <p className="leading-relaxed break-words">{msg.content}</p>}
@@ -216,7 +216,7 @@ export default function ClassroomChat({ classroomId, socket }: ClassroomChatProp
                     <div className={`mt-2 p-2 rounded-xl flex items-center gap-2 border ${
                       isMe 
                         ? 'bg-black/20 border-white/10 text-white' 
-                        : 'bg-white/5 border-white/10 text-cyan-300'
+                        : 'bg-white/5 border-white/10 text-zinc-300'
                     }`}>
                       <File className="w-4 h-4 shrink-0" />
                       <div className="flex-1 min-w-0 text-left">
@@ -244,7 +244,7 @@ export default function ClassroomChat({ classroomId, socket }: ClassroomChatProp
       {/* Input Form */}
       <form onSubmit={handleSend} className="p-4 border-t border-white/5 bg-white/5 space-y-3">
         {selectedFile && (
-          <div className="flex items-center justify-between p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs">
+          <div className="flex items-center justify-between p-2 rounded-xl bg-zinc-500/10 border border-zinc-500/20 text-zinc-400 text-xs">
             <div className="flex items-center gap-2 truncate">
               <File className="w-4 h-4" />
               <span className="truncate">{selectedFile.name}</span>

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { GlassPanel } from '../../../components/GlassPanel';
 import { GlassButton } from '../../../components/GlassButton';
 import { Plus, User, LogOut, BookOpen, AlertCircle, Sparkles, Camera, Check, ShieldAlert, Trophy, ShieldCheck, Play, Award, Send, MessageSquare, Loader2, HelpCircle } from 'lucide-react';
+import { ThemeToggle } from '../../../components/ThemeToggle';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
 import gsap from 'gsap';
@@ -40,6 +41,7 @@ export default function StudentDashboard() {
   const [violationsCount, setViolationsCount] = useState<number>(0);
   const [autoSubmitted, setAutoSubmitted] = useState<boolean>(false);
   const [scoreboard, setScoreboard] = useState<any[] | null>(null);
+  const [myId, setMyId] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [violationWarning, setViolationWarning] = useState(false);
 
@@ -62,6 +64,7 @@ export default function StudentDashboard() {
   const [vivaError, setVivaError] = useState('');
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [vivaTranscript, setVivaTranscript] = useState<any[]>([]);
+  const [vivaAgentState, setVivaAgentState] = useState<'idle' | 'speaking' | 'listening' | 'thinking'>('idle');
   const recorderRef = useRef<MediaRecorder | null>(null);
 
   // Refs for GSAP
@@ -84,6 +87,7 @@ export default function StudentDashboard() {
     }
 
     setStudentName(user.name);
+    setMyId(user.id);
     fetchClassrooms();
 
     // Initialize socket connection
@@ -227,15 +231,25 @@ export default function StudentDashboard() {
     }
   }, [selectedClassroom]);
 
-  // Spoken Viva TTS helper
+  // Spoken Viva TTS helper — speaks the question aloud and drives the AI examiner avatar state
   const speakQuestion = (text: string) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel(); // Cancel any ongoing speech
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.95; // Slightly slower for clarity
-      utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
-    }
+    if (!('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel(); // Cancel any ongoing speech
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.95; // Slightly slower for clarity
+    utterance.pitch = 1.0;
+
+    // Prefer a natural English voice for the examiner
+    const voices = window.speechSynthesis.getVoices();
+    const preferred =
+      voices.find((v) => /Google UK English Female|Samantha|Microsoft Zira|Microsoft Aria/i.test(v.name)) ||
+      voices.find((v) => v.lang?.toLowerCase().startsWith('en'));
+    if (preferred) utterance.voice = preferred;
+
+    utterance.onstart = () => setVivaAgentState('speaking');
+    utterance.onend = () => setVivaAgentState((prev) => (prev === 'speaking' ? 'idle' : prev));
+    utterance.onerror = () => setVivaAgentState((prev) => (prev === 'speaking' ? 'idle' : prev));
+    window.speechSynthesis.speak(utterance);
   };
 
   const handleStartViva = async () => {
@@ -287,6 +301,7 @@ export default function StudentDashboard() {
 
       recorder.start();
       setIsRecordingViva(true);
+      setVivaAgentState('listening');
     } catch (err) {
       console.error('Microphone access denied:', err);
       setVivaError('Microphone access denied. Please allow microphone permissions.');
@@ -305,6 +320,7 @@ export default function StudentDashboard() {
   const uploadVivaAnswer = async (audioBlob: Blob) => {
     if (!selectedClassroom) return;
     setIsSubmittingVivaAnswer(true);
+    setVivaAgentState('thinking');
     setVivaError('');
 
     const formData = new FormData();
@@ -357,6 +373,7 @@ export default function StudentDashboard() {
     setVivaActive(false);
     setIsRecordingViva(false);
     setIsSubmittingVivaAnswer(false);
+    setVivaAgentState('idle');
   };
 
   // Anti-cheat detection logic
@@ -514,24 +531,25 @@ export default function StudentDashboard() {
   }, [isModalOpen]);
 
   return (
-    <div ref={containerRef} className="relative min-h-screen w-full bg-[#0A0A0B] text-white p-6 md:p-12 overflow-x-hidden">
+    <div ref={containerRef} className="themed-surface relative min-h-screen w-full bg-theme text-white p-6 md:p-12 overflow-x-hidden">
       {/* Aesthetic ambient lighting */}
-      <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full bg-cyan-500/10 blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-blue-500/10 blur-[130px] pointer-events-none" />
+      <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/10 blur-[130px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/10 blur-[130px] pointer-events-none" />
 
       {/* Top Navigation */}
       <nav className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-12 border-b border-white/5 pb-6">
         <div>
-          <div className="flex items-center gap-2 text-cyan-400 mb-1">
+          <div className="flex items-center gap-2 text-zinc-400 mb-1">
             <Sparkles className="w-4 h-4" />
             <span className="text-xs font-semibold tracking-wider uppercase">AxesAI Student Portal</span>
           </div>
-          <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
+          <h1 className="text-3xl font-extrabold tracking-tight accent-gradient-text">
             Welcome, {studentName}
           </h1>
         </div>
-        <div className="flex gap-3">
-          <GlassButton onClick={() => setIsFaceSetupOpen(true)} className="flex items-center gap-2 border-cyan-500/20 hover:bg-cyan-500/10 text-cyan-300">
+        <div className="flex gap-3 items-center">
+          <ThemeToggle />
+          <GlassButton onClick={() => setIsFaceSetupOpen(true)} className="flex items-center gap-2 border-zinc-500/20 hover:bg-zinc-500/10 text-zinc-300">
             <Camera className="w-4 h-4" /> Setup Face Login
           </GlassButton>
           <GlassButton onClick={() => setIsModalOpen(true)} variant="accent" className="flex items-center gap-2">
@@ -561,7 +579,7 @@ export default function StudentDashboard() {
 
             {/* Scoreboard View */}
             {scoreboard && (
-              <GlassPanel className="p-8 mb-8 border-cyan-500/20">
+              <GlassPanel className="p-8 mb-8 border-zinc-500/20">
                 <div className="flex items-center gap-3 mb-6">
                   <Award className="w-8 h-8 text-yellow-400" />
                   <div>
@@ -569,6 +587,25 @@ export default function StudentDashboard() {
                     <p className="text-xs text-gray-400">Live ranking of participants</p>
                   </div>
                 </div>
+
+                {/* Your personal result */}
+                {(() => {
+                  const me = scoreboard.find((s) => s.studentId === myId);
+                  if (!me) return null;
+                  return (
+                    <div className="mb-6 bg-gradient-to-r from-zinc-500/15 to-zinc-500/15 border border-zinc-500/30 rounded-2xl p-5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-wider text-zinc-300 font-semibold">Your Result</p>
+                        <p className="text-3xl font-extrabold text-white mt-1">{me.score} <span className="text-base font-medium text-gray-400">pts</span></p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Rank</p>
+                        <p className="text-3xl font-extrabold text-yellow-400 mt-1">#{me.rank}</p>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse text-sm">
                     <thead>
@@ -581,11 +618,12 @@ export default function StudentDashboard() {
                     </thead>
                     <tbody>
                       {scoreboard.map((student) => (
-                        <tr key={student.studentId} className="border-b border-white/5 hover:bg-white/5 transition duration-150">
-                          <td className="py-4 px-4 font-bold text-cyan-400">#{student.rank}</td>
+                        <tr key={student.studentId} className={`border-b border-white/5 transition duration-150 ${student.studentId === myId ? 'bg-zinc-500/10 hover:bg-zinc-500/15' : 'hover:bg-white/5'}`}>
+                          <td className="py-4 px-4 font-bold text-zinc-400">#{student.rank}</td>
                           <td className="py-4 px-4 font-medium text-white flex items-center gap-2">
                             {student.rank === 1 && <Trophy className="w-4 h-4 text-yellow-400 shrink-0" />}
                             {student.name}
+                            {student.studentId === myId && <span className="text-[10px] bg-zinc-500/20 text-zinc-300 px-2 py-0.5 rounded-full border border-zinc-500/30">You</span>}
                           </td>
                           <td className="py-4 px-4 font-semibold text-green-400">{student.score} pts</td>
                           <td className="py-4 px-4">
@@ -640,26 +678,26 @@ export default function StudentDashboard() {
                     </GlassButton>
                   </GlassPanel>
                 ) : (
-                  <GlassPanel className="p-8 border-cyan-500/30 relative">
+                  <GlassPanel className="p-8 border-zinc-500/30 relative">
                     {/* Header with progress and timer */}
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 border-b border-white/10 pb-4">
                       <div>
-                        <span className="text-xs text-cyan-400 font-semibold uppercase tracking-wider">Live Assessment</span>
+                        <span className="text-xs text-zinc-400 font-semibold uppercase tracking-wider">Live Assessment</span>
                         <h3 className="text-xl font-bold text-white mt-1">Question {currentQuestionIndex + 1}</h3>
                       </div>
                       <div className="flex items-center gap-6">
                         {/* Violations counter */}
                         <div className="flex items-center gap-2 bg-black/40 px-3 py-1.5 rounded-lg border border-white/10 text-xs">
-                          <ShieldCheck className="w-4 h-4 text-cyan-400" />
+                          <ShieldCheck className="w-4 h-4 text-zinc-400" />
                           <span className="text-gray-400">Violations:</span>
                           <span className={`font-bold ${violationsCount > 1 ? 'text-red-400 animate-pulse' : 'text-green-400'}`}>
                             {violationsCount}/3
                           </span>
                         </div>
                         {/* Timer */}
-                        <div className="flex items-center gap-2 bg-cyan-950/30 px-4 py-2 rounded-xl border border-cyan-500/30 shadow-[0_0_15px_rgba(6,182,212,0.15)]">
-                          <span className="text-xs text-cyan-400 font-medium">Time Left:</span>
-                          <span className={`text-xl font-extrabold font-mono leading-none ${timeRemaining < 10 ? 'text-red-500 animate-ping' : 'text-cyan-300'}`}>
+                        <div className="flex items-center gap-2 bg-zinc-950/30 px-4 py-2 rounded-xl border border-zinc-500/30 shadow-[0_0_15px_rgba(6,182,212,0.15)]">
+                          <span className="text-xs text-zinc-400 font-medium">Time Left:</span>
+                          <span className={`text-xl font-extrabold font-mono leading-none ${timeRemaining < 10 ? 'text-red-500 animate-ping' : 'text-zinc-300'}`}>
                             {timeRemaining}s
                           </span>
                         </div>
@@ -692,7 +730,7 @@ export default function StudentDashboard() {
                                   onClick={() => handleAnswerChange(opt)}
                                   className={`p-4 rounded-xl border text-left text-sm transition-all ${
                                     isSelected 
-                                      ? 'border-cyan-400 bg-cyan-950/20 text-cyan-200' 
+                                      ? 'border-zinc-400 bg-zinc-950/20 text-zinc-200' 
                                       : 'border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 hover:border-white/20'
                                   }`}
                                 >
@@ -710,7 +748,7 @@ export default function StudentDashboard() {
                               onChange={(e) => handleAnswerChange(e.target.value)}
                               rows={5}
                               placeholder="Type your response here..."
-                              className="w-full bg-white/5 border border-white/10 focus:border-cyan-500/50 rounded-xl p-4 text-white placeholder-gray-600 outline-none text-sm resize-none transition-all"
+                              className="w-full bg-white/5 border border-white/10 focus:border-zinc-500/50 rounded-xl p-4 text-white placeholder-gray-600 outline-none text-sm resize-none transition-all"
                             />
                           </div>
                         )}
@@ -729,17 +767,17 @@ export default function StudentDashboard() {
                     onClick={() => setActiveChatTab('chat')}
                     className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition ${
                       activeChatTab === 'chat'
-                        ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                        ? 'bg-zinc-500/20 text-zinc-400 border border-zinc-500/30'
                         : 'text-gray-400 hover:text-white hover:bg-white/5'
                     }`}
                   >
                     <MessageSquare className="w-4.5 h-4.5" /> Class Discussion
                   </button>
                   <button
-                    onClick={() => setActiveChatTab('doubt')}
+                    onClick={() => { setActiveChatTab('doubt'); if (selectedClassroom) fetchClassroomDoc(selectedClassroom._id); }}
                     className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition ${
                       activeChatTab === 'doubt'
-                        ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+                        ? 'bg-zinc-500/20 text-zinc-400 border border-zinc-500/30'
                         : 'text-gray-400 hover:text-white hover:bg-white/5'
                     }`}
                   >
@@ -764,19 +802,26 @@ export default function StudentDashboard() {
                     <div className="flex items-center justify-between border-b border-white/10 pb-4 mb-4">
                       <div>
                         <h3 className="text-md font-bold text-white flex items-center gap-2">
-                          <Sparkles className="w-5 h-5 text-purple-400" /> AI Doubt Solver
+                          <Sparkles className="w-5 h-5 text-zinc-400" /> AI Doubt Solver
                         </h3>
                         <p className="text-[11px] text-gray-500">
                           {classroomDoc ? `Answering doubts grounded in: ${classroomDoc.title}` : 'No notes uploaded yet.'}
                         </p>
                       </div>
+                      <button
+                        onClick={() => selectedClassroom && fetchClassroomDoc(selectedClassroom._id)}
+                        className="text-[11px] text-zinc-300 hover:text-zinc-100 border border-zinc-500/30 rounded-lg px-3 py-1.5 transition"
+                        title="Re-check for notes uploaded by your teacher"
+                      >
+                        ↻ Refresh notes
+                      </button>
                     </div>
 
                     {/* Messages Area */}
                     <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-1 scrollbar-thin">
                       {doubtMessages.length === 0 ? (
                         <div className="flex flex-col items-center justify-center text-center h-full max-w-sm mx-auto space-y-4">
-                          <HelpCircle className="w-12 h-12 text-purple-500/30" />
+                          <HelpCircle className="w-12 h-12 text-zinc-500/30" />
                           <div>
                             <p className="text-sm font-semibold text-gray-300">Grounded AI RAG Chatbot</p>
                             <p className="text-xs text-gray-500 mt-1 leading-relaxed">
@@ -791,15 +836,15 @@ export default function StudentDashboard() {
                           <div key={idx} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                             <div className={`max-w-[80%] rounded-2xl p-4 text-sm ${
                               msg.sender === 'user'
-                                ? 'bg-cyan-500/10 border border-cyan-500/20 text-white rounded-br-none'
-                                : 'bg-purple-500/10 border border-purple-500/20 text-gray-300 rounded-bl-none'
+                                ? 'bg-zinc-500/10 border border-zinc-500/20 text-white rounded-br-none'
+                                : 'bg-zinc-500/10 border border-zinc-500/20 text-gray-300 rounded-bl-none'
                             }`}>
                               <p className="leading-relaxed whitespace-pre-wrap">{msg.text}</p>
                               {msg.citations && msg.citations.length > 0 && (
                                 <div className="mt-3 pt-2 border-t border-white/5 flex flex-wrap gap-1.5 items-center">
                                   <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Sources:</span>
                                   {msg.citations.map((cite, cIdx) => (
-                                    <span key={cIdx} className="text-[10px] px-2 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400 font-medium">
+                                    <span key={cIdx} className="text-[10px] px-2 py-0.5 rounded bg-zinc-500/10 border border-zinc-500/20 text-zinc-400 font-medium">
                                       {cite}
                                     </span>
                                   ))}
@@ -812,9 +857,9 @@ export default function StudentDashboard() {
                       
                       {isAskingDoubt && (
                         <div className="flex justify-start">
-                          <div className="bg-purple-500/5 border border-purple-500/10 rounded-2xl rounded-bl-none p-4 flex items-center gap-2">
-                            <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
-                            <span className="text-xs text-purple-400 font-semibold animate-pulse">AI is searching notes...</span>
+                          <div className="bg-zinc-500/5 border border-zinc-500/10 rounded-2xl rounded-bl-none p-4 flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin text-zinc-400" />
+                            <span className="text-xs text-zinc-400 font-semibold animate-pulse">AI is searching notes...</span>
                           </div>
                         </div>
                       )}
@@ -832,13 +877,13 @@ export default function StudentDashboard() {
                         onChange={(e) => setDoubtInput(e.target.value)}
                         placeholder={classroomDoc ? "Ask a doubt about notes..." : "Upload notes to ask doubts..."}
                         disabled={isAskingDoubt || !classroomDoc}
-                        className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 outline-none focus:border-purple-500/50 transition"
+                        className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 outline-none focus:border-zinc-500/50 transition"
                       />
                       <GlassButton
                         type="submit"
                         variant="accent"
                         disabled={isAskingDoubt || !doubtInput.trim() || !classroomDoc}
-                        className="flex-shrink-0 px-4 flex items-center justify-center border-purple-500/30 hover:bg-purple-500/10 text-purple-400"
+                        className="flex-shrink-0 px-4 flex items-center justify-center border-zinc-500/30 hover:bg-zinc-500/10 text-zinc-400"
                       >
                         <Send className="w-4 h-4" />
                       </GlassButton>
@@ -890,16 +935,63 @@ export default function StudentDashboard() {
                       </div>
                     ) : (
                       <div className="flex-1 flex flex-col justify-between">
+                        {/* AI Examiner Avatar */}
+                        <div className="flex flex-col items-center mb-4">
+                          <div className="relative w-24 h-24 flex items-center justify-center">
+                            {/* Animated rings reflect the examiner's live state */}
+                            <span className={`absolute inset-0 rounded-full ${
+                              vivaAgentState === 'speaking' ? 'bg-zinc-500/20 animate-ping' :
+                              vivaAgentState === 'listening' ? 'bg-red-500/20 animate-ping' :
+                              vivaAgentState === 'thinking' ? 'bg-zinc-500/20 animate-pulse' : 'bg-white/5'
+                            }`} />
+                            <span className={`absolute inset-2 rounded-full ${
+                              vivaAgentState === 'speaking' ? 'bg-zinc-500/25 animate-pulse' :
+                              vivaAgentState === 'listening' ? 'bg-red-500/25 animate-pulse' :
+                              vivaAgentState === 'thinking' ? 'bg-zinc-500/25' : 'bg-white/5'
+                            }`} />
+                            <div className={`relative w-16 h-16 rounded-full flex items-center justify-center border-2 ${
+                              vivaAgentState === 'speaking' ? 'border-zinc-400 bg-zinc-500/30' :
+                              vivaAgentState === 'listening' ? 'border-red-400 bg-red-500/30' :
+                              vivaAgentState === 'thinking' ? 'border-zinc-400 bg-zinc-500/30' : 'border-white/20 bg-white/10'
+                            }`}>
+                              {vivaAgentState === 'thinking'
+                                ? <Loader2 className="w-7 h-7 text-zinc-300 animate-spin" />
+                                : vivaAgentState === 'listening'
+                                ? <Camera className="w-7 h-7 text-red-300" />
+                                : <Sparkles className={`w-7 h-7 text-zinc-300 ${vivaAgentState === 'speaking' ? 'animate-pulse' : ''}`} />}
+                            </div>
+                          </div>
+                          <p className="mt-3 text-xs font-semibold text-white">AI Examiner</p>
+                          <p className={`text-[11px] font-medium ${
+                            vivaAgentState === 'speaking' ? 'text-zinc-300' :
+                            vivaAgentState === 'listening' ? 'text-red-300' :
+                            vivaAgentState === 'thinking' ? 'text-zinc-300' : 'text-gray-500'
+                          }`}>
+                            {vivaAgentState === 'speaking' ? '🔊 Asking the question…' :
+                             vivaAgentState === 'listening' ? '🎙️ Listening to your answer…' :
+                             vivaAgentState === 'thinking' ? '🤔 Evaluating your answer…' :
+                             'Ready for your response'}
+                          </p>
+                          {vivaQuestion && (
+                            <button
+                              onClick={() => speakQuestion(vivaQuestion)}
+                              className="mt-2 text-[10px] text-zinc-300 hover:text-zinc-100 underline"
+                            >
+                              ↻ Repeat question
+                            </button>
+                          )}
+                        </div>
+
                         {/* Upper Section: Agent Question Card */}
-                        <div className="space-y-4 overflow-y-auto max-h-[380px] pr-1">
+                        <div className="space-y-4 overflow-y-auto max-h-[300px] pr-1">
                           <div className="flex justify-between items-center text-[10px] uppercase font-bold tracking-wider text-red-400">
                             <span>Topic: {vivaTopic}</span>
                             <span>Question {vivaProgress} of 3</span>
                           </div>
 
                           {vivaQuestion && (
-                            <div className="p-4 bg-purple-500/5 border border-purple-500/10 rounded-2xl text-sm text-white font-medium leading-relaxed flex gap-2">
-                              <Sparkles className="w-5 h-5 text-purple-400 mt-0.5 flex-shrink-0" />
+                            <div className="p-4 bg-zinc-500/5 border border-zinc-500/10 rounded-2xl text-sm text-white font-medium leading-relaxed flex gap-2">
+                              <Sparkles className="w-5 h-5 text-zinc-400 mt-0.5 flex-shrink-0" />
                               <p>{vivaQuestion}</p>
                             </div>
                           )}
@@ -919,7 +1011,7 @@ export default function StudentDashboard() {
                             <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Live Transcript</p>
                             <div className="space-y-2 max-h-[150px] overflow-y-auto text-xs">
                               {vivaTranscript.map((t, idx) => (
-                                <div key={idx} className={`p-2 rounded-lg ${t.role === 'agent' ? 'bg-purple-500/5 text-purple-300' : 'bg-cyan-500/5 text-cyan-300'}`}>
+                                <div key={idx} className={`p-2 rounded-lg ${t.role === 'agent' ? 'bg-zinc-500/5 text-zinc-300' : 'bg-zinc-500/5 text-zinc-300'}`}>
                                   <strong>{t.role === 'agent' ? 'AI Agent' : 'You'}:</strong> {t.text}
                                   {t.score !== undefined && <span className="float-right text-[10px] text-green-400 font-bold">{t.score}/10</span>}
                                 </div>
@@ -935,7 +1027,7 @@ export default function StudentDashboard() {
                           )}
                           <div className="flex justify-center">
                             {isSubmittingVivaAnswer ? (
-                              <div className="flex items-center gap-2 text-xs text-purple-400 font-semibold animate-pulse bg-purple-500/5 px-6 py-3 rounded-full border border-purple-500/10">
+                              <div className="flex items-center gap-2 text-xs text-zinc-400 font-semibold animate-pulse bg-zinc-500/5 px-6 py-3 rounded-full border border-zinc-500/10">
                                 <Loader2 className="w-4 h-4 animate-spin" />
                                 <span>Processing & evaluating response...</span>
                               </div>
@@ -951,9 +1043,9 @@ export default function StudentDashboard() {
                               vivaQuestion ? (
                                 <button
                                   onClick={startVivaRecording}
-                                  className="flex items-center gap-2 bg-purple-500/20 border border-purple-500/30 text-purple-300 font-bold px-6 py-3 rounded-full hover:bg-purple-500/30 transition shadow-[0_0_15px_rgba(168,85,247,0.2)] cursor-pointer"
+                                  className="flex items-center gap-2 bg-zinc-500/20 border border-zinc-500/30 text-zinc-300 font-bold px-6 py-3 rounded-full hover:bg-zinc-500/30 transition shadow-[0_0_15px_rgba(168,85,247,0.2)] cursor-pointer"
                                 >
-                                  <Camera className="w-4.5 h-4.5 text-purple-400" />
+                                  <Camera className="w-4.5 h-4.5 text-zinc-400" />
                                   Speak / Record Response
                                 </button>
                               ) : (
@@ -980,7 +1072,7 @@ export default function StudentDashboard() {
                   <div className="space-y-3 text-sm text-gray-300">
                     <div className="flex justify-between border-b border-white/5 pb-2">
                       <span className="text-gray-400">Join Code</span>
-                      <span className="font-mono text-cyan-400 font-semibold">{selectedClassroom.joinCode}</span>
+                      <span className="font-mono text-zinc-400 font-semibold">{selectedClassroom.joinCode}</span>
                     </div>
                     <div className="flex justify-between border-b border-white/5 pb-2">
                       <span className="text-gray-400">Status</span>
@@ -994,7 +1086,7 @@ export default function StudentDashboard() {
         ) : (
           <div>
             <h2 className="text-xl font-bold text-gray-300 mb-6 flex items-center gap-2">
-              <BookOpen className="w-5 h-5 text-cyan-400" /> Enrolled Classrooms
+              <BookOpen className="w-5 h-5 text-zinc-400" /> Enrolled Classrooms
             </h2>
 
             {classrooms.length === 0 ? (
@@ -1012,7 +1104,7 @@ export default function StudentDashboard() {
                       <div>
                         <h3 className="text-xl font-bold text-white mb-2">{room.name}</h3>
                         <p className="text-xs text-gray-400 flex items-center gap-1.5 mb-4">
-                          <User className="w-4 h-4 text-cyan-400" /> Instructor: <span className="text-gray-200">{room.teacherId?.name || 'Assigned Instructor'}</span>
+                          <User className="w-4 h-4 text-zinc-400" /> Instructor: <span className="text-gray-200">{room.teacherId?.name || 'Assigned Instructor'}</span>
                         </p>
                       </div>
 

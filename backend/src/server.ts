@@ -12,6 +12,7 @@ import assignmentRoutes from './routes/assignmentRoutes.js';
 import { initSocketConfig } from './services/socketService.js'; // Add this at the top
 import documentRoutes from './routes/documentRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
+import lessonRoutes from './routes/lessonRoutes.js';
 // Add this near the top of your server.ts file
 import './queues/aiQueue.js';
 // Load environment variables
@@ -39,6 +40,7 @@ app.use('/api/classrooms', classroomRoutes);
 app.use('/api/assignments', assignmentRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/lessons', lessonRoutes);
 // Create an HTTP server from the Express app
 const server = http.createServer(app);
 

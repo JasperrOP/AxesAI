@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { 
-  createClassroom, joinClassroom, getClassrooms, getClassroomAnalytics, 
-  searchStudents, getStudentPerformance 
+import {
+  createClassroom, joinClassroom, getClassrooms, getClassroomAnalytics,
+  searchStudents, getStudentPerformance, getGradebook, getClassroomInsights
 } from '../controllers/classroomController.js';
 import { 
   startViva, submitAnswer, getVivaHistory 
@@ -21,6 +21,8 @@ router.get('/', getClassrooms as any);
 router.get('/students/search', searchStudents as any);
 router.get('/students/:studentId/performance', getStudentPerformance as any);
 router.get('/:id/analytics', getClassroomAnalytics as any);
+router.get('/:id/gradebook', getGradebook as any);
+router.get('/:id/insights', getClassroomInsights as any);
 
 // Viva Oral Examination routes
 router.post('/viva/start', startViva as any);
