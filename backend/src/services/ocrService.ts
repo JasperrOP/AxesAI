@@ -6,17 +6,34 @@ import Groq from 'groq-sdk';
 // HEIC/HEIF mime types that need conversion before OCR
 const HEIC_MIMES = ['image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'];
 
-// Groq multimodal (vision) model — reads handwriting far better than Tesseract.
-const VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
-
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+// Candidate Groq multimodal (vision) models, tried in order until one succeeds.
+// GROQ_VISION_MODEL (if set) is tried first. Groq occasionally renames these, so
+// we probe several rather than hard-coding a single id that may 404.
+const VISION_MODEL_CANDIDATES = [
+  process.env.GROQ_VISION_MODEL,
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+  'llama-3.2-90b-vision-preview',
+  'llama-3.2-11b-vision-preview',
+].filter(Boolean) as string[];
+
+const OCR_PROMPT =
+  'You are an OCR engine for scanned exam answer sheets, including messy handwriting. ' +
+  'Transcribe ALL text in the image exactly as written, preserving line breaks and math where possible. ' +
+  'Do not summarise, explain, correct spelling, or add anything not present. ' +
+  'Then rate how legible/clear the scan was from 0 (unreadable) to 100 (perfectly clear). ' +
+  'Respond with ONLY a JSON object: {"text": "<transcription>", "confidence": <0-100 integer>}';
 
 /**
  * Transcribe an image (incl. handwriting) using a Groq vision model.
- * Returns extracted text plus a self-reported legibility confidence (0-100)
- * the teacher can use to flag low-quality scans for manual review.
+ * Tries each candidate model until one works; throws with the collected errors
+ * (so the caller can surface WHY vision failed instead of silently degrading).
  */
-export const performVisionOCR = async (fileBuffer: Buffer): Promise<{ text: string; confidence: number }> => {
+export const performVisionOCR = async (
+  fileBuffer: Buffer
+): Promise<{ text: string; confidence: number; model: string }> => {
   // Normalise: auto-orient, cap size, convert to JPEG so any input format works.
   const normalized = await sharp(fileBuffer)
     .rotate()
@@ -25,46 +42,54 @@ export const performVisionOCR = async (fileBuffer: Buffer): Promise<{ text: stri
     .toBuffer();
 
   const base64 = normalized.toString('base64');
+  const errors: string[] = [];
 
-  const completion = await groq.chat.completions.create({
-    model: VISION_MODEL,
-    temperature: 0,
-    response_format: { type: 'json_object' },
-    messages: [
-      {
-        role: 'user',
-        content: [
+  for (const model of VISION_MODEL_CANDIDATES) {
+    try {
+      const completion = await groq.chat.completions.create({
+        model,
+        temperature: 0,
+        messages: [
           {
-            type: 'text',
-            text:
-              'You are an OCR engine for scanned exam answer sheets, including messy handwriting. ' +
-              'Transcribe ALL text in the image exactly as written, preserving line breaks and math where possible. ' +
-              'Do not summarise, explain, correct spelling, or add anything not present. ' +
-              'Then rate how legible/clear the scan was from 0 (unreadable) to 100 (perfectly clear). ' +
-              'Respond with ONLY a JSON object: {"text": "<transcription>", "confidence": <0-100 integer>}',
+            role: 'user',
+            content: [
+              { type: 'text', text: OCR_PROMPT },
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
+            ] as any,
           },
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-        ] as any,
-      },
-    ],
-  });
+        ],
+      });
 
-  const raw = completion.choices[0]?.message?.content || '{}';
-  let parsed: { text?: string; confidence?: number };
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    parsed = match ? JSON.parse(match[0]) : { text: raw };
+      const raw = completion.choices[0]?.message?.content || '{}';
+      let parsed: { text?: string; confidence?: number };
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        const match = raw.match(/\{[\s\S]*\}/);
+        parsed = match ? JSON.parse(match[0]) : { text: raw };
+      }
+
+      const text = (parsed.text || '').trim();
+      if (text.length > 0) {
+        console.log(`✅ Groq vision OCR succeeded with model: ${model}`);
+        return { text, confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 80, model };
+      }
+      errors.push(`${model}: returned empty text`);
+    } catch (err: any) {
+      const msg = err?.error?.message || err?.message || String(err);
+      console.warn(`Groq vision model "${model}" failed: ${msg}`);
+      errors.push(`${model}: ${msg}`);
+    }
   }
 
-  return {
-    text: (parsed.text || '').trim(),
-    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 80,
-  };
+  throw new Error(`All Groq vision models failed → ${errors.join(' | ')}`);
 };
 
-export const performOCR = async (fileBuffer: Buffer, mimeType: string): Promise<{ text: string; confidence: number }> => {
+export interface OCRResult { text: string; confidence: number; engine: 'pdf-text' | 'groq-vision' | 'tesseract'; visionError?: string; }
+
+export const performOCR = async (fileBuffer: Buffer, mimeType: string): Promise<OCRResult> => {
+  let visionError: string | undefined;
+
   // Digital PDFs: extract the embedded text layer directly (fast + accurate).
   if (mimeType === 'application/pdf') {
     try {
@@ -79,7 +104,7 @@ export const performOCR = async (fileBuffer: Buffer, mimeType: string): Promise<
         text += pageText + '\n';
       }
       if (text.trim().length > 10) {
-        return { text: text.trim(), confidence: 95 };
+        return { text: text.trim(), confidence: 95, engine: 'pdf-text' };
       }
     } catch (err) {
       console.warn('PDF raw text extraction failed, falling back to OCR if possible:', err);
@@ -90,15 +115,18 @@ export const performOCR = async (fileBuffer: Buffer, mimeType: string): Promise<
     // Images (incl. photos of handwritten answers): prefer Groq vision.
     if (process.env.GROQ_API_KEY) {
       try {
-        console.log(`🖼️  Running Groq vision OCR (${VISION_MODEL})...`);
+        console.log('🖼️  Running Groq vision OCR...');
         const result = await performVisionOCR(fileBuffer);
         if (result.text.trim().length > 0) {
-          return result;
+          return { text: result.text, confidence: result.confidence, engine: 'groq-vision' };
         }
-        console.warn('Groq vision OCR returned no text, falling back to Tesseract.');
+        visionError = 'Groq vision returned no text';
       } catch (err: any) {
-        console.warn('Groq vision OCR failed, falling back to Tesseract:', err?.message || err);
+        visionError = err?.message || String(err);
+        console.warn('Groq vision OCR failed, falling back to Tesseract:', visionError);
       }
+    } else {
+      visionError = 'GROQ_API_KEY not set';
     }
   }
 
@@ -114,7 +142,7 @@ export const performOCR = async (fileBuffer: Buffer, mimeType: string): Promise<
     const ret = await worker.recognize(ocrBuffer);
     const text = ret.data.text || '';
     const confidence = ret.data.confidence || 0;
-    return { text, confidence };
+    return { text, confidence, engine: 'tesseract', visionError };
   } finally {
     await worker.terminate();
   }

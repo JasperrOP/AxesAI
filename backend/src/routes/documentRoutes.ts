@@ -83,6 +83,8 @@ router.post('/grade-handwritten', authenticateToken as any, upload.single('file'
             message: 'Grading complete',
             extractedText: ocrResult.text,
             confidence: ocrResult.confidence,
+            engine: ocrResult.engine,
+            visionError: ocrResult.visionError,
             criteriaScores: gradeResult.criteriaScores,
             totalScore: gradeResult.totalScore,
             feedback: gradeResult.feedback

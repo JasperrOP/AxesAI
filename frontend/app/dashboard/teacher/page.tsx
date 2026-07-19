@@ -17,6 +17,10 @@ import { io, Socket } from 'socket.io-client';
 import FaceCapture from '../../../components/FaceCapture';
 import ClassroomChat from '../../../components/ClassroomChat';
 import { ThemeToggle } from '../../../components/ThemeToggle';
+import { MeetingRoom } from '../../../components/MeetingRoom';
+import { AIAssistant } from '../../../components/AIAssistant';
+import { ProfileSettings } from '../../../components/ProfileSettings';
+import { Video as VideoIcon, Bot, Settings as SettingsIcon, ShieldCheck, Eye } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid, LineChart, Line
 } from 'recharts';
@@ -46,11 +50,21 @@ const QUESTION_TYPE_OPTIONS = [
   { value: 'diagram', label: 'Diagram/Graph-Based Questions' },
 ];
 
-type View = 'home' | 'classrooms' | 'assignments' | 'create-assignment' | 'view-paper' | 'ai-grading' | 'lesson-planner' | 'attendance' | 'gradebook';
+type View = 'home' | 'classrooms' | 'assignments' | 'create-assignment' | 'view-paper' | 'ai-grading' | 'lesson-planner' | 'attendance' | 'gradebook' | 'ai-assistant' | 'proctoring' | 'settings';
 
 export default function TeacherDashboard() {
   const router = useRouter();
   const [teacherName, setTeacherName] = useState('');
+  const [myId, setMyId] = useState('');
+  // Live meeting
+  const [activeMeeting, setActiveMeeting] = useState<any>(null);
+  const [inMeeting, setInMeeting] = useState(false);
+  const [isStartingMeeting, setIsStartingMeeting] = useState(false);
+  // Proctoring report
+  const [proctorClassroom, setProctorClassroom] = useState<any>(null);
+  const [proctorReport, setProctorReport] = useState<any>(null);
+  const [isFetchingProctor, setIsFetchingProctor] = useState(false);
+  const [proctorAlerts, setProctorAlerts] = useState<any[]>([]);
   const [activeView, setActiveView] = useState<View>('home');
   
   // Classrooms
@@ -171,6 +185,7 @@ export default function TeacherDashboard() {
     const user = JSON.parse(userString);
     if (user.role !== 'teacher') { router.push('/dashboard/student'); return; }
     setTeacherName(user.name);
+    setMyId(user.id);
     
     socketRef.current = io('http://localhost:5001');
     
@@ -412,6 +427,59 @@ export default function TeacherDashboard() {
     }
   };
 
+  // ---- AI Proctoring report ----
+  const fetchProctorReport = async (classroom: any) => {
+    setProctorClassroom(classroom);
+    setIsFetchingProctor(true);
+    try {
+      const res = await axios.get(`http://localhost:5001/api/proctor/report/${classroom._id}`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      setProctorReport(res.data);
+    } catch (err) {
+      console.error('Failed to fetch proctor report:', err);
+    } finally {
+      setIsFetchingProctor(false);
+    }
+  };
+
+  // Live proctoring alerts from students taking a quiz
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    const handler = (data: any) => setProctorAlerts((prev) => [data, ...prev].slice(0, 30));
+    socket.on('proctor:alert', handler);
+    return () => { socket.off('proctor:alert', handler); };
+  }, [socketRef.current]);
+
+  // ---- Live meeting ----
+  const fetchActiveMeeting = async (classroomId: string) => {
+    try {
+      const res = await axios.get(`http://localhost:5001/api/meetings/active/${classroomId}`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      setActiveMeeting(res.data.meeting);
+    } catch (err) {
+      console.error('Failed to fetch active meeting:', err);
+    }
+  };
+
+  const handleStartMeeting = async () => {
+    if (!selectedClassroom) return;
+    setIsStartingMeeting(true);
+    try {
+      const res = await axios.post('http://localhost:5001/api/meetings',
+        { classroomId: selectedClassroom._id, title: `${selectedClassroom.name} — Live Class` },
+        { headers: { Authorization: `Bearer ${getToken()}` } });
+      setActiveMeeting(res.data.meeting);
+      setInMeeting(true);
+    } catch (err) {
+      console.error('Failed to start meeting:', err);
+    } finally {
+      setIsStartingMeeting(false);
+    }
+  };
+
   const fetchVivaHistory = async (classroomId: string) => {
     try {
       const res = await axios.get(`http://localhost:5001/api/classrooms/${classroomId}/viva/history`, {
@@ -429,6 +497,8 @@ export default function TeacherDashboard() {
       fetchClassroomAnalytics(selectedClassroom._id);
       fetchClassroomDoc(selectedClassroom._id);
       fetchVivaHistory(selectedClassroom._id);
+      fetchActiveMeeting(selectedClassroom._id);
+      setInMeeting(false);
     }
   }, [selectedClassroom]);
 
@@ -499,15 +569,25 @@ export default function TeacherDashboard() {
     }
   }, [activeView]);
 
-  // Animate content on view change
+  // Animate content on view change — classy staggered cascade of the top-level cards
   useEffect(() => {
-    if (mainContentRef.current) {
-      gsap.fromTo(mainContentRef.current, 
-        { opacity: 0, y: 15 },
-        { opacity: 1, y: 0, duration: 0.4, ease: 'power2.out' }
-      );
-    }
+    if (!mainContentRef.current) return;
+    const el = mainContentRef.current;
+    const targets = el.children.length > 1 ? el.children : el.querySelectorAll(':scope > * > *');
+    gsap.fromTo(
+      targets,
+      { opacity: 0, y: 24, filter: 'blur(6px)' },
+      { opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.6, stagger: 0.07, ease: 'power3.out', clearProps: 'filter' }
+    );
   }, [activeView]);
+
+  // Subtle one-time sidebar reveal on mount
+  useEffect(() => {
+    if (containerRef.current) {
+      const aside = containerRef.current.querySelector('aside');
+      if (aside) gsap.fromTo(aside, { opacity: 0, x: -24 }, { opacity: 1, x: 0, duration: 0.6, ease: 'power3.out' });
+    }
+  }, []);
 
   const getToken = () => localStorage.getItem('token') || '';
 
@@ -813,6 +893,9 @@ export default function TeacherDashboard() {
     { icon: <BookOpenCheck className="w-4 h-4" />, label: 'AI Lesson Planner', view: 'lesson-planner' },
     { icon: <UserCheck className="w-4 h-4" />, label: 'Attendance', view: 'attendance' },
     { icon: <Download className="w-4 h-4" />, label: 'Gradebook', view: 'gradebook' },
+    { icon: <ShieldCheck className="w-4 h-4" />, label: 'Proctoring', view: 'proctoring' },
+    { icon: <Bot className="w-4 h-4" />, label: 'AI Assistant', view: 'ai-assistant' },
+    { icon: <SettingsIcon className="w-4 h-4" />, label: 'Settings', view: 'settings' },
   ];
 
   return (
@@ -889,12 +972,12 @@ export default function TeacherDashboard() {
       </aside>
 
       {/* ======== MAIN CONTENT ======== */}
-      <div className="flex-1 overflow-y-auto relative">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden relative min-w-0">
         {/* Ambient Lights */}
         <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/8 blur-[130px] pointer-events-none" />
         <div className="absolute bottom-[-10%] left-[-10%] w-[400px] h-[400px] rounded-full bg-zinc-500/8 blur-[120px] pointer-events-none" />
 
-        <main ref={mainContentRef} className="relative z-10 p-6 md:p-10 max-w-5xl mx-auto">
+        <main ref={mainContentRef} className={`relative z-10 p-6 md:p-10 mx-auto ${activeView === 'classrooms' && selectedClassroom ? 'max-w-[1400px]' : 'max-w-5xl'}`}>
 
           {/* ======== HOME VIEW ======== */}
           {activeView === 'home' && (
@@ -1036,35 +1119,79 @@ export default function TeacherDashboard() {
                     </GlassButton>
                     <div>
                       <h2 className="text-2xl font-bold text-white">{selectedClassroom.name}</h2>
-                      <p className="text-xs text-gray-400">Instructor: {teacherName} · Join Code: <strong className="text-zinc-300">{selectedClassroom.joinCode}</strong></p>
+                      <p className="text-xs text-gray-400">Instructor: {teacherName}</p>
                     </div>
                   </div>
 
-                  {/* ---- Row 1: Chat + Sidebar ---- */}
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* ---- Stat strip (full width) ---- */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    <GlassPanel className="p-5">
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Join Code</p>
+                      <p className="text-xl font-extrabold text-white tracking-wider">{selectedClassroom.joinCode}</p>
+                    </GlassPanel>
+                    <GlassPanel className="p-5">
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Students</p>
+                      <p className="text-xl font-extrabold text-white">{selectedClassroom.studentIds?.length || 0}</p>
+                    </GlassPanel>
+                    <GlassPanel className="p-5">
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Status</p>
+                      <p className="text-xl font-extrabold text-green-400">Active</p>
+                    </GlassPanel>
+                    <GlassPanel className="p-5">
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Study Notes</p>
+                      <p className="text-xl font-extrabold text-white truncate">{classroomDoc ? 'Indexed' : 'None'}</p>
+                    </GlassPanel>
+                  </div>
+
+                  {/* ---- Live Class Meeting ---- */}
+                  {inMeeting && activeMeeting ? (
+                    <div className="mb-6">
+                      <MeetingRoom
+                        meeting={activeMeeting}
+                        socket={socketRef.current}
+                        userId={myId}
+                        userName={teacherName}
+                        role="teacher"
+                        isHost={true}
+                        onLeave={() => { setInMeeting(false); fetchActiveMeeting(selectedClassroom._id); }}
+                      />
+                    </div>
+                  ) : (
+                    <GlassPanel className="p-6 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-2xl bg-white/[0.06] border border-white/10 flex items-center justify-center">
+                          <VideoIcon className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-bold text-white">Live Class Meeting</h3>
+                          <p className="text-xs text-gray-400">
+                            {activeMeeting
+                              ? <>A meeting is live · code <strong className="text-white">{activeMeeting.roomCode}</strong></>
+                              : 'Start a video call with screen share and a collaborative whiteboard.'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {activeMeeting ? (
+                          <GlassButton variant="accent" onClick={() => setInMeeting(true)} className="flex items-center gap-2">
+                            <VideoIcon className="w-4 h-4" /> Rejoin Meeting
+                          </GlassButton>
+                        ) : (
+                          <GlassButton variant="accent" onClick={handleStartMeeting} disabled={isStartingMeeting} className="flex items-center gap-2">
+                            {isStartingMeeting ? <Loader2 className="w-4 h-4 animate-spin" /> : <VideoIcon className="w-4 h-4" />}
+                            {isStartingMeeting ? 'Starting…' : 'Start Meeting'}
+                          </GlassButton>
+                        )}
+                      </div>
+                    </GlassPanel>
+                  )}
+
+                  {/* ---- Row 1: Chat + Controls ---- */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
                     <div className="lg:col-span-2">
                       <ClassroomChat classroomId={selectedClassroom._id} socket={socketRef.current} />
                     </div>
                     <div className="space-y-6">
-                      {/* Classroom Details Card */}
-                      <GlassPanel className="p-6">
-                        <h3 className="text-lg font-bold text-white mb-4">Classroom Details</h3>
-                        <div className="space-y-3">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-400">Join Code</span>
-                            <span className="font-bold text-zinc-300 tracking-wider">{selectedClassroom.joinCode}</span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-400">Status</span>
-                            <span className="font-bold text-green-400">Active</span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-400">Students</span>
-                            <span className="font-bold text-white">{selectedClassroom.studentIds?.length || 0}</span>
-                          </div>
-                        </div>
-                      </GlassPanel>
-
                       {/* Classroom Documents Card */}
                       <GlassPanel className="p-6">
                         <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
@@ -2248,6 +2375,112 @@ export default function TeacherDashboard() {
           )}
 
           {/* ======== GRADEBOOK ======== */}
+          {activeView === 'ai-assistant' && (
+            <AIAssistant userName={teacherName} role="teacher" />
+          )}
+
+          {activeView === 'settings' && <ProfileSettings onUpdated={(u) => setTeacherName(u.name)} />}
+
+          {/* ======== AI PROCTORING ======== */}
+          {activeView === 'proctoring' && (
+            <div className="animate-fade-in">
+              <div className="mb-8">
+                <h2 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
+                  <ShieldCheck className="w-7 h-7 text-gray-300" /> AI Exam Proctoring
+                </h2>
+                <p className="text-gray-400 mt-1">
+                  Students' webcams are analysed during live quizzes. Flags are captured with timestamped photo evidence.
+                </p>
+              </div>
+
+              {/* Live alerts */}
+              {proctorAlerts.length > 0 && (
+                <GlassPanel className="p-5 mb-6 border-red-500/25">
+                  <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /> Live Alerts
+                  </h3>
+                  <div className="space-y-2 max-h-56 overflow-y-auto">
+                    {proctorAlerts.map((a, i) => (
+                      <div key={i} className="flex items-center gap-3 text-xs p-2.5 rounded-xl bg-red-500/[0.06] border border-red-500/15">
+                        {a.snapshotUrl && <img src={`http://localhost:5001${a.snapshotUrl}`} alt="" className="w-12 h-9 object-cover rounded-md border border-white/10" />}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-semibold truncate">{a.studentName}</p>
+                          <p className="text-red-300">{(a.violations || []).join(', ').replace(/_/g, ' ')}</p>
+                        </div>
+                        <span className="text-gray-500 flex-shrink-0">{new Date(a.at).toLocaleTimeString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </GlassPanel>
+              )}
+
+              <div className="flex flex-wrap gap-2 mb-6">
+                {classrooms.map((c) => (
+                  <button key={c._id} onClick={() => fetchProctorReport(c)}
+                    className={`px-4 py-2 rounded-xl text-sm font-medium border transition cursor-pointer ${proctorClassroom?._id === c._id ? 'bg-white text-black border-transparent' : 'bg-white/[0.02] border-white/10 text-gray-400 hover:text-white'}`}>
+                    {c.name}
+                  </button>
+                ))}
+              </div>
+
+              {isFetchingProctor ? (
+                <GlassPanel className="p-10 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-gray-400" /></GlassPanel>
+              ) : proctorReport ? (
+                proctorReport.students.length === 0 ? (
+                  <GlassPanel className="p-10 text-center text-gray-400 text-sm">
+                    No proctoring flags recorded — everyone stayed clean. ✅
+                  </GlassPanel>
+                ) : (
+                  <div className="space-y-4">
+                    {proctorReport.students.map((s: any) => (
+                      <GlassPanel key={s.studentId} className="p-6">
+                        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                          <div>
+                            <h4 className="text-lg font-bold text-white">{s.studentName}</h4>
+                            <p className="text-xs text-gray-500">{s.total} flag{s.total === 1 ? '' : 's'} recorded</p>
+                          </div>
+                          <div className="text-right">
+                            <p className={`text-2xl font-extrabold ${s.integrityScore >= 80 ? 'text-green-400' : s.integrityScore >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              {s.integrityScore}
+                            </p>
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider">Integrity Score</p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 mb-4">
+                          {Object.entries(s.counts).map(([k, v]: any) => (
+                            <span key={k} className="text-[11px] px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-gray-300 capitalize">
+                              {k.replace(/_/g, ' ')}: <strong className="text-white">{v}</strong>
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="flex gap-2 overflow-x-auto pb-1">
+                          {s.events.filter((e: any) => e.snapshotUrl).slice(0, 12).map((e: any, i: number) => (
+                            <div key={i} className="flex-shrink-0 w-28">
+                              <img src={`http://localhost:5001${e.snapshotUrl}`} alt={e.type}
+                                className="w-28 h-20 object-cover rounded-lg border border-white/10" />
+                              <p className="text-[9px] text-gray-500 mt-1 capitalize truncate">{e.type.replace(/_/g, ' ')}</p>
+                              <p className="text-[9px] text-gray-600">{new Date(e.createdAt).toLocaleTimeString()}</p>
+                            </div>
+                          ))}
+                          {s.events.filter((e: any) => e.snapshotUrl).length === 0 && (
+                            <p className="text-xs text-gray-500">No photo evidence for these flags.</p>
+                          )}
+                        </div>
+                      </GlassPanel>
+                    ))}
+                  </div>
+                )
+              ) : (
+                <GlassPanel className="p-10 text-center text-gray-400 text-sm flex flex-col items-center gap-3">
+                  <Eye className="w-8 h-8 text-gray-600" />
+                  Select a classroom above to view its proctoring report.
+                </GlassPanel>
+              )}
+            </div>
+          )}
+
           {activeView === 'gradebook' && (
             <div className="animate-fade-in">
               <div className="mb-8 flex items-start justify-between flex-wrap gap-4">

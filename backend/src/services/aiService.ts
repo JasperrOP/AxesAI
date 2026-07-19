@@ -427,3 +427,34 @@ Return at most 5 learning gaps (highest miss rate first) and at most 5 actions.
         return { learningGaps: [], recommendedActions: [] };
     }
 };
+
+// ---------------- General AI Assistant (sidebar chat) ----------------
+export const chatWithAssistant = async (params: {
+  messages: { role: 'user' | 'assistant'; content: string }[];
+  role?: 'teacher' | 'student';
+  userName?: string;
+}) => {
+  const { messages, role = 'student', userName = 'there' } = params;
+
+  const persona = role === 'teacher'
+    ? `You are AxesAI Assistant, an expert teaching co-pilot for a teacher named ${userName}. Help with lesson planning, question design, grading rubrics, explaining concepts, classroom strategies and using the AxesAI platform. Be practical and concise.`
+    : `You are AxesAI Assistant, a friendly study tutor for a student named ${userName}. Explain concepts simply with examples, help with homework understanding (guide, don't just hand over answers), and help them prepare for quizzes and vivas. Be encouraging and concise.`;
+
+  try {
+    const history = messages.slice(-12).map((m) => ({
+      role: m.role === 'assistant' ? 'assistant' as const : 'user' as const,
+      content: m.content,
+    }));
+
+    const result = await model.invoke([
+      { role: 'system', content: `${persona}\nFormat answers in short paragraphs or bullet points. Use markdown-style **bold** for key terms.` },
+      ...history,
+    ] as any);
+
+    const reply = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+    return { reply };
+  } catch (error) {
+    console.error('❌ AI assistant chat failed:', error);
+    throw new Error('Failed to get a response from the AI assistant');
+  }
+};

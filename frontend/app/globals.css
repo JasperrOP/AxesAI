@@ -93,6 +93,19 @@
   ::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); background-clip: content-box; }
 }
 
+/* Talking-mouth animation for the AI viva examiner avatar */
+@keyframes vivaTalk {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1.25); }
+}
+.viva-talk { animation: vivaTalk 0.3s ease-in-out infinite; transform-origin: center; }
+
+@keyframes vivaBlink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  96% { transform: scaleY(0.1); }
+}
+.viva-blink { animation: vivaBlink 4s ease-in-out infinite; transform-origin: center; }
+
 /* Theme-aware helper utilities (use in new/updated markup) */
 @layer utilities {
   .text-theme { color: var(--text); }

@@ -389,3 +389,42 @@ export const getClassroomInsights = async (req: AuthRequest, res: Response): Pro
     res.status(500).json({ message: 'Failed to build insights', error: error.message });
   }
 };
+
+import VivaResult from '../models/VivaResult.js';
+
+// A student's own consolidated grades — quiz results + viva results across all classes.
+export const getMyGrades = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
+    const studentId = req.user.id;
+
+    const results = await QuizResult.find({ studentId }).sort({ submittedAt: 1 });
+    const vivas = await VivaResult.find({ studentId }).sort({ createdAt: 1 });
+
+    const totalQuizzes = results.length;
+    const averageScore = totalQuizzes > 0 ? results.reduce((s, r) => s + r.totalScore, 0) / totalQuizzes : 0;
+    const bestScore = totalQuizzes > 0 ? Math.max(...results.map(r => r.totalScore)) : 0;
+
+    const quizzes = results.map((r, i) => ({
+      name: `Quiz ${i + 1}`,
+      score: r.totalScore,
+      violations: r.violations.length,
+      submittedAt: r.submittedAt,
+    }));
+
+    const vivaList = vivas.map(v => ({
+      topic: v.topic,
+      score: v.score,
+      maxScore: v.maxScore,
+      createdAt: v.createdAt,
+    }));
+
+    res.status(200).json({ averageScore, totalQuizzes, bestScore, quizzes, vivas: vivaList });
+  } catch (error: any) {
+    console.error('Failed to fetch my grades:', error);
+    res.status(500).json({ message: 'Failed to fetch grades', error: error.message });
+  }
+};

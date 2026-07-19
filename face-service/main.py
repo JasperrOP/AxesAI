@@ -76,6 +76,77 @@ async def verify_face(payload: VerifyFaceRequest):
     match = bool(distance <= 0.6)
     return {"match": match, "distance": distance}
 
+class ProctorRequest(BaseModel):
+    frame: str
+    storedEmbedding: List[float] = []   # optional: verify it's the same enrolled student
+
+
+@app.post("/proctor-check")
+async def proctor_check(payload: ProctorRequest):
+    """
+    Analyses one webcam frame during an exam and reports integrity signals:
+      - no_face        : student left the frame
+      - multiple_faces : someone else is in the room / helping
+      - looking_away   : head turned away from the screen
+      - identity_mismatch : the face isn't the enrolled student (if embedding given)
+    """
+    img = decode_base64_image(payload.frame)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Invalid frame image format.")
+
+    locations = face_recognition.face_locations(img)
+    face_count = len(locations)
+
+    violations = []
+    if face_count == 0:
+        violations.append("no_face")
+    elif face_count > 1:
+        violations.append("multiple_faces")
+
+    looking_away = False
+    if face_count >= 1:
+        landmarks_list = face_recognition.face_landmarks(img, face_locations=[locations[0]])
+        if landmarks_list:
+            lm = landmarks_list[0]
+            try:
+                left_eye = np.mean(lm["left_eye"], axis=0)
+                right_eye = np.mean(lm["right_eye"], axis=0)
+                nose = np.mean(lm["nose_tip"], axis=0)
+
+                eye_center_x = (left_eye[0] + right_eye[0]) / 2.0
+                eye_distance = abs(right_eye[0] - left_eye[0]) or 1.0
+
+                # How far the nose sits from the midpoint between the eyes,
+                # normalised by eye separation → robust to distance from camera.
+                horizontal_ratio = (nose[0] - eye_center_x) / eye_distance
+                # Vertical: nose far below/above the eye line means head tilted down/up
+                eye_center_y = (left_eye[1] + right_eye[1]) / 2.0
+                vertical_ratio = (nose[1] - eye_center_y) / eye_distance
+
+                if abs(horizontal_ratio) > 0.42 or vertical_ratio > 1.35 or vertical_ratio < 0.25:
+                    looking_away = True
+                    violations.append("looking_away")
+            except Exception as e:
+                print(f"Landmark analysis failed: {e}")
+
+    identity_ok = True
+    if payload.storedEmbedding and face_count >= 1:
+        encs = face_recognition.face_encodings(img, known_face_locations=[locations[0]])
+        if encs:
+            distance = float(np.linalg.norm(encs[0] - np.array(payload.storedEmbedding)))
+            identity_ok = bool(distance <= 0.6)
+            if not identity_ok:
+                violations.append("identity_mismatch")
+
+    return {
+        "faceCount": face_count,
+        "lookingAway": looking_away,
+        "identityOk": identity_ok,
+        "violations": violations,
+        "clean": len(violations) == 0,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)

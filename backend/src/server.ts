@@ -13,6 +13,10 @@ import { initSocketConfig } from './services/socketService.js'; // Add this at t
 import documentRoutes from './routes/documentRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import lessonRoutes from './routes/lessonRoutes.js';
+import meetingRoutes from './routes/meetingRoutes.js';
+import aiChatRoutes from './routes/aiChatRoutes.js';
+import proctorRoutes from './routes/proctorRoutes.js';
+import userRoutes from './routes/userRoutes.js';
 // Add this near the top of your server.ts file
 import './queues/aiQueue.js';
 // Load environment variables
@@ -41,6 +45,10 @@ app.use('/api/assignments', assignmentRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/lessons', lessonRoutes);
+app.use('/api/meetings', meetingRoutes);
+app.use('/api/ai-chat', aiChatRoutes);
+app.use('/api/proctor', proctorRoutes);
+app.use('/api/users', userRoutes);
 // Create an HTTP server from the Express app
 const server = http.createServer(app);
 

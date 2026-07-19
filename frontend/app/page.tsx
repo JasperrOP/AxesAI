@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GlassButton } from '../components/GlassButton';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { Reveal } from '../components/Reveal';
@@ -9,11 +9,12 @@ import {
   ScanLine, BarChart3, Search, LayoutDashboard, Mic, MessageSquareText,
   GraduationCap, Zap, ShieldCheck, Check,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useScroll, useSpring } from 'framer-motion';
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
+import gsap from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import FaceCapture from '../components/FaceCapture';
-import { AuthAside } from '../components/AuthAside';
 
 const FEATURES = [
   { icon: ScanLine, title: 'Handwritten OCR Grading', desc: 'Snap a photo of a handwritten answer — AI reads it, grades against your rubric, and flags low-confidence scans for review.', color: '#0a84ff' },
@@ -40,6 +41,42 @@ const STATS = [
 
 export default function LandingShowcase() {
   const router = useRouter();
+  const heroRef = useRef<HTMLDivElement>(null);
+  const { scrollYProgress } = useScroll();
+  const progress = useSpring(scrollYProgress, { stiffness: 120, damping: 30, restDelta: 0.001 });
+
+  // GSAP: word-by-word headline reveal + scroll parallax
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    gsap.registerPlugin(ScrollTrigger);
+
+    const ctx = gsap.context(() => {
+      gsap.fromTo('.hero-word',
+        { yPercent: 115, opacity: 0, rotateX: -60 },
+        { yPercent: 0, opacity: 1, rotateX: 0, duration: 1, stagger: 0.06, ease: 'power4.out', delay: 0.1 });
+
+      // Ambient blobs drift as you scroll
+      gsap.to('.ambient-a', { yPercent: 32, ease: 'none', scrollTrigger: { trigger: document.body, start: 'top top', end: 'bottom bottom', scrub: 1 } });
+      gsap.to('.ambient-b', { yPercent: -26, ease: 'none', scrollTrigger: { trigger: document.body, start: 'top top', end: 'bottom bottom', scrub: 1 } });
+
+      // Hero gently fades/lifts away as you scroll past it
+      gsap.to('.hero-inner', {
+        opacity: 0.15, y: -50, ease: 'none',
+        scrollTrigger: { trigger: heroRef.current, start: 'bottom 85%', end: 'bottom 25%', scrub: true },
+      });
+
+      // Section headings slide in on scroll
+      gsap.utils.toArray<HTMLElement>('.gsap-section').forEach((el) => {
+        gsap.fromTo(el,
+          { y: 60, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.9, ease: 'power3.out', scrollTrigger: { trigger: el, start: 'top 88%' } });
+      });
+    });
+
+    return () => ctx.revert();
+  }, []);
+
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [useFaceLogin, setUseFaceLogin] = useState(false);
@@ -89,7 +126,7 @@ export default function LandingShowcase() {
         localStorage.setItem('token', response.data.token);
         localStorage.setItem('user', JSON.stringify(response.data.user));
         setTimeout(() => {
-          router.push(response.data.user.role === 'teacher' ? '/dashboard/teacher' : '/dashboard/student');
+          { const r = response.data.user.role; router.push(r === 'admin' ? '/dashboard/admin' : r === 'teacher' ? '/dashboard/teacher' : '/dashboard/student'); }
         }, 400);
       } else {
         setTimeout(() => {
@@ -122,7 +159,7 @@ export default function LandingShowcase() {
         localStorage.setItem('token', response.data.token);
         localStorage.setItem('user', JSON.stringify(response.data.user));
         setTimeout(() => {
-          router.push(response.data.user.role === 'teacher' ? '/dashboard/teacher' : '/dashboard/student');
+          { const r = response.data.user.role; router.push(r === 'admin' ? '/dashboard/admin' : r === 'teacher' ? '/dashboard/teacher' : '/dashboard/student'); }
         }, 400);
       }
     } catch (error: any) {
@@ -137,9 +174,15 @@ export default function LandingShowcase() {
 
   return (
     <main className="relative min-h-screen w-full overflow-x-hidden">
+      {/* Scroll progress bar */}
+      <motion.div
+        className="fixed top-0 left-0 right-0 h-[3px] origin-left z-50"
+        style={{ scaleX: progress, background: 'linear-gradient(90deg, var(--text), var(--text-muted))' }}
+      />
+
       {/* Ambient background */}
-      <div className="fixed top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full blur-[140px] pointer-events-none" style={{ background: 'color-mix(in srgb, var(--accent) 22%, transparent)' }} />
-      <div className="fixed bottom-[-15%] right-[-10%] w-[700px] h-[700px] rounded-full blur-[160px] pointer-events-none" style={{ background: 'color-mix(in srgb, var(--accent-2) 18%, transparent)' }} />
+      <div className="ambient-a fixed top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full blur-[140px] pointer-events-none" style={{ background: 'color-mix(in srgb, var(--accent) 22%, transparent)' }} />
+      <div className="ambient-b fixed bottom-[-15%] right-[-10%] w-[700px] h-[700px] rounded-full blur-[160px] pointer-events-none" style={{ background: 'color-mix(in srgb, var(--accent-2) 18%, transparent)' }} />
 
       {/* ============ NAV ============ */}
       <motion.nav
@@ -173,49 +216,57 @@ export default function LandingShowcase() {
       </motion.nav>
 
       {/* ============ HERO ============ */}
-      <section className="relative">
+      <section ref={heroRef} className="relative">
         <div className="absolute inset-0 bg-grid pointer-events-none" />
-        <div className="relative mx-auto max-w-4xl px-5 pt-20 pb-24 text-center">
+        <div className="hero-inner relative mx-auto max-w-3xl px-5 pt-12 pb-16 text-center">
           <motion.div
-            initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}
-            className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass-panel !rounded-full mb-7"
+            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full glass-panel !rounded-full mb-5"
           >
-            <Sparkles className="w-4 h-4" style={{ color: 'var(--accent)' }} />
-            <span className="text-xs font-semibold tracking-wider uppercase text-theme-muted">The AI operating system for classrooms</span>
+            <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--accent)' }} />
+            <span className="text-[11px] font-semibold tracking-wider uppercase text-theme-muted">The AI operating system for classrooms</span>
           </motion.div>
 
-          <motion.h1
-            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, delay: 0.05, ease: [0.16, 1, 0.3, 1] }}
-            className="text-5xl sm:text-7xl font-extrabold tracking-tight leading-[1.05] text-theme"
-          >
-            Teach, assess and grade<br />
-            <span className="accent-gradient-text">at the speed of AI.</span>
-          </motion.h1>
+          {/* GSAP word-by-word reveal */}
+          <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight leading-[1.06] text-theme"
+              style={{ perspective: 800 }}>
+            {['Teach,', 'assess', 'and', 'grade'].map((w) => (
+              <span key={w} className="inline-block overflow-hidden align-bottom mr-[0.25em]">
+                <span className="hero-word inline-block">{w}</span>
+              </span>
+            ))}
+            <br />
+            {['at', 'the', 'speed', 'of', 'AI.'].map((w) => (
+              <span key={w} className="inline-block overflow-hidden align-bottom mr-[0.25em]">
+                <span className="hero-word inline-block accent-gradient-text">{w}</span>
+              </span>
+            ))}
+          </h1>
 
           <motion.p
-            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, delay: 0.15 }}
-            className="mt-6 text-lg text-theme-muted max-w-2xl mx-auto leading-relaxed"
+            initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.5 }}
+            className="mt-5 text-base text-theme-muted max-w-xl mx-auto leading-relaxed"
           >
-            AxesAI unifies AI assessment generation, live quizzes, handwritten OCR grading, grounded doubt-solving, and spoken viva — one platform built for schools and colleges.
+            AI assessments, live quizzes, OCR grading, proctoring, spoken viva and live classes — one platform for schools and colleges.
           </motion.p>
 
           <motion.div
-            initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, delay: 0.25 }}
-            className="mt-9 flex flex-col sm:flex-row items-center justify-center gap-3"
+            initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.6 }}
+            className="mt-7 flex flex-col sm:flex-row items-center justify-center gap-3"
           >
-            <GlassButton variant="accent" onClick={() => openAuth('register')} className="w-full sm:w-auto text-base !px-7 !py-3.5 flex items-center justify-center gap-2">
-              Start free <ArrowRight className="w-5 h-5" />
+            <GlassButton variant="accent" onClick={() => openAuth('register')} className="w-full sm:w-auto !px-6 !py-3 flex items-center justify-center gap-2">
+              Start free <ArrowRight className="w-4 h-4" />
             </GlassButton>
-            <GlassButton onClick={() => openAuth('login')} className="w-full sm:w-auto text-base !px-7 !py-3.5">
+            <GlassButton onClick={() => openAuth('login')} className="w-full sm:w-auto !px-6 !py-3">
               Sign in
             </GlassButton>
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.4 }}
-            className="mt-6 flex items-center justify-center gap-2 text-xs text-theme-subtle"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.7, delay: 0.75 }}
+            className="mt-5 flex items-center justify-center gap-2 text-[11px] text-theme-subtle"
           >
-            <ShieldCheck className="w-4 h-4" /> JWT + optional Face ID · No credit card required
+            <ShieldCheck className="w-3.5 h-3.5" /> JWT + optional Face ID · No credit card required
           </motion.div>
         </div>
       </section>
@@ -236,7 +287,7 @@ export default function LandingShowcase() {
 
       {/* ============ FEATURES ============ */}
       <section id="features" className="relative mx-auto max-w-6xl px-5 py-24">
-        <Reveal className="text-center max-w-2xl mx-auto mb-14">
+        <Reveal className="gsap-section text-center max-w-2xl mx-auto mb-14">
           <p className="text-xs font-bold uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Everything in one place</p>
           <h2 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-theme mt-3">Six AI modules. One platform.</h2>
           <p className="text-theme-muted mt-4 text-lg">Each feature replaces hours of manual work — and they all share one classroom, one gradebook, one login.</p>
@@ -264,7 +315,7 @@ export default function LandingShowcase() {
 
       {/* ============ HOW IT WORKS ============ */}
       <section id="how" className="relative mx-auto max-w-6xl px-5 py-20">
-        <Reveal className="text-center max-w-2xl mx-auto mb-14">
+        <Reveal className="gsap-section text-center max-w-2xl mx-auto mb-14">
           <p className="text-xs font-bold uppercase tracking-widest" style={{ color: 'var(--accent)' }}>How it works</p>
           <h2 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-theme mt-3">From class to insights in four steps</h2>
         </Reveal>
@@ -328,22 +379,22 @@ export default function LandingShowcase() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.94, y: 20 }}
               transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-              className="w-full max-w-3xl"
+              className="w-full max-w-[400px]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="glass-panel !p-0 relative overflow-hidden grid md:grid-cols-2">
-                <AuthAside />
-                <div className="p-8 relative">
+              <div className="glass-panel p-6 relative overflow-hidden">
                 <button onClick={() => setShowAuth(false)} className="absolute top-4 right-4 text-theme-subtle hover:text-theme transition-colors z-10">
                   <X className="w-5 h-5" />
                 </button>
 
-                <div className="flex flex-col items-center text-center mb-6">
-                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-3" style={{ background: '#1c1c1e' }}>
-                    <GraduationCap className="w-6 h-6 text-white" />
+                <div className="flex items-center gap-2.5 mb-5">
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: '#1c1c1e' }}>
+                    <GraduationCap className="w-5 h-5 text-white" />
                   </div>
-                  <h2 className="text-2xl font-bold text-theme mb-1">{authMode === 'login' ? 'Welcome back' : 'Create your account'}</h2>
-                  <p className="text-xs text-theme-muted">{authMode === 'login' ? 'Sign in to your AxesAI workspace' : 'Get started as a Teacher or Student'}</p>
+                  <div>
+                    <h2 className="text-lg font-bold text-theme leading-tight">{authMode === 'login' ? 'Welcome back' : 'Create account'}</h2>
+                    <p className="text-[11px] text-theme-muted">{authMode === 'login' ? 'Sign in to your workspace' : 'Teacher or Student'}</p>
+                  </div>
                 </div>
 
                 {message && (
@@ -425,7 +476,6 @@ export default function LandingShowcase() {
                   <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setMessage(null); setUseFaceLogin(false); }} className="text-xs cursor-pointer text-theme-muted hover:text-theme transition-colors">
                     {authMode === 'login' ? (<>Don’t have an account? <span style={{ color: 'var(--accent)' }} className="font-semibold">Sign Up</span></>) : (<>Already have an account? <span style={{ color: 'var(--accent)' }} className="font-semibold">Sign In</span></>)}
                   </button>
-                </div>
                 </div>
               </div>
             </motion.div>

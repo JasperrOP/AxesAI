@@ -5,7 +5,7 @@ export interface AuthRequest extends Request {
   user?: {
     id: string;
     email: string;
-    role: 'teacher' | 'student';
+    role: 'teacher' | 'student' | 'admin';
   };
 }
 
@@ -23,12 +23,12 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
     if (err) {
       return res.status(403).json({ message: 'Invalid or expired token' });
     }
-    req.user = decoded as { id: string; email: string; role: 'teacher' | 'student' };
+    req.user = decoded as { id: string; email: string; role: 'teacher' | 'student' | 'admin' };
     next();
   });
 };
 
-export const requireRole = (roles: ('teacher' | 'student')[]) => {
+export const requireRole = (roles: ('teacher' | 'student' | 'admin')[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({ message: 'Authentication required' });

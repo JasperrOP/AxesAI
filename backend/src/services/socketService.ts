@@ -32,6 +32,22 @@ const presenceRoster = (classroomId: string) =>
     joinedAt: v.joinedAt,
   }));
 
+// ---- Live meeting rooms (WebRTC mesh) ----
+interface MeetParticipant {
+  socketId: string;
+  userId: string;
+  name: string;
+  role: 'teacher' | 'student';
+  audio: boolean;
+  video: boolean;
+  isHost: boolean;
+}
+const meetingRooms: Record<string, Record<string, MeetParticipant>> = {};
+// socketId -> meetingId, so we can clean up on disconnect
+const socketMeeting: Record<string, string> = {};
+
+const meetRoster = (meetingId: string) => Object.values(meetingRooms[meetingId] || {});
+
 export const initSocketConfig = (io: Server) => {
   io.on('connection', (socket: Socket) => {
     console.log(`User connected: ${socket.id}`);
@@ -281,9 +297,113 @@ export const initSocketConfig = (io: Server) => {
       socket.emit('attendance:update', { classroomId, present: presenceRoster(classroomId) });
     });
 
+    // ================= LIVE MEETING (WebRTC mesh over Socket.IO) =================
+
+    // Join a meeting room. Newcomer receives the existing peers and initiates offers to them.
+    socket.on('meet:join', ({ meetingId, userId, name, role, isHost }) => {
+      if (!meetingId) return;
+      const room = `meet_${meetingId}`;
+      socket.join(room);
+
+      if (!meetingRooms[meetingId]) meetingRooms[meetingId] = {};
+      const existingPeers = meetRoster(meetingId);
+
+      meetingRooms[meetingId][socket.id] = {
+        socketId: socket.id,
+        userId: userId || socket.id,
+        name: name || 'Guest',
+        role: role || 'student',
+        audio: true,
+        video: true,
+        isHost: !!isHost,
+      };
+      socketMeeting[socket.id] = meetingId;
+
+      // Tell the newcomer who is already here (it will create offers to each)
+      socket.emit('meet:peers', { peers: existingPeers, self: meetingRooms[meetingId][socket.id] });
+      // Tell everyone else someone joined
+      socket.to(room).emit('meet:peer-joined', { peer: meetingRooms[meetingId][socket.id] });
+      // Refresh roster for all
+      io.to(room).emit('meet:roster', { participants: meetRoster(meetingId) });
+      console.log(`🎥 ${name} joined meeting ${meetingId} (${meetRoster(meetingId).length} in room)`);
+    });
+
+    // Relay WebRTC signalling (offer / answer / ICE) to one specific peer socket
+    socket.on('meet:signal', ({ to, data }) => {
+      if (!to) return;
+      io.to(to).emit('meet:signal', { from: socket.id, data });
+    });
+
+    // Mic / camera / screen-share state broadcast
+    socket.on('meet:media-state', ({ meetingId, audio, video, screen }) => {
+      if (!meetingId || !meetingRooms[meetingId]?.[socket.id]) return;
+      meetingRooms[meetingId][socket.id].audio = !!audio;
+      meetingRooms[meetingId][socket.id].video = !!video;
+      io.to(`meet_${meetingId}`).emit('meet:media-state', { socketId: socket.id, audio, video, screen });
+      io.to(`meet_${meetingId}`).emit('meet:roster', { participants: meetRoster(meetingId) });
+    });
+
+    // Host ended the meeting for everyone
+    socket.on('meet:end', ({ meetingId }) => {
+      if (!meetingId) return;
+      io.to(`meet_${meetingId}`).emit('meet:ended', {});
+      delete meetingRooms[meetingId];
+    });
+
+    socket.on('meet:leave', ({ meetingId }) => {
+      if (!meetingId) return;
+      const room = `meet_${meetingId}`;
+      if (meetingRooms[meetingId]) delete meetingRooms[meetingId][socket.id];
+      delete socketMeeting[socket.id];
+      socket.leave(room);
+      socket.to(room).emit('meet:peer-left', { socketId: socket.id });
+      io.to(room).emit('meet:roster', { participants: meetRoster(meetingId) });
+    });
+
+    // ================= COLLABORATIVE WHITEBOARD =================
+
+    // A finished element (stroke/shape/text) — broadcast to everyone else in the meeting
+    socket.on('board:draw', ({ meetingId, element }) => {
+      if (!meetingId || !element) return;
+      socket.to(`meet_${meetingId}`).emit('board:draw', { element });
+    });
+
+    // In-progress stroke preview so others see it being drawn live
+    socket.on('board:live', ({ meetingId, stroke }) => {
+      if (!meetingId) return;
+      socket.to(`meet_${meetingId}`).emit('board:live', { socketId: socket.id, stroke });
+    });
+
+    socket.on('board:undo', ({ meetingId, elementId }) => {
+      if (!meetingId) return;
+      socket.to(`meet_${meetingId}`).emit('board:undo', { elementId });
+    });
+
+    socket.on('board:clear', ({ meetingId }) => {
+      if (!meetingId) return;
+      socket.to(`meet_${meetingId}`).emit('board:clear', {});
+    });
+
+    // Live cursor presence on the board
+    socket.on('board:cursor', ({ meetingId, x, y, name }) => {
+      if (!meetingId) return;
+      socket.to(`meet_${meetingId}`).emit('board:cursor', { socketId: socket.id, x, y, name });
+    });
+
     // 7. Disconnection clean up
     socket.on('disconnect', () => {
       console.log(`User disconnected: ${socket.id}`);
+
+      // Leave any live meeting this socket was in
+      const meetingId = socketMeeting[socket.id];
+      if (meetingId) {
+        const room = `meet_${meetingId}`;
+        if (meetingRooms[meetingId]) delete meetingRooms[meetingId][socket.id];
+        delete socketMeeting[socket.id];
+        socket.to(room).emit('meet:peer-left', { socketId: socket.id });
+        io.to(room).emit('meet:roster', { participants: meetRoster(meetingId) });
+      }
+
       const meta = socketMeta[socket.id];
       if (meta) {
         const { classroomId, studentId, role } = meta;

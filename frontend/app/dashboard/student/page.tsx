@@ -3,8 +3,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { GlassPanel } from '../../../components/GlassPanel';
 import { GlassButton } from '../../../components/GlassButton';
-import { Plus, User, LogOut, BookOpen, AlertCircle, Sparkles, Camera, Check, ShieldAlert, Trophy, ShieldCheck, Play, Award, Send, MessageSquare, Loader2, HelpCircle } from 'lucide-react';
+import { Plus, User, LogOut, BookOpen, AlertCircle, Sparkles, Camera, Check, ShieldAlert, Trophy, ShieldCheck, Play, Award, Send, MessageSquare, Loader2, HelpCircle, GraduationCap, StickyNote, UserCheck, Save } from 'lucide-react';
 import { ThemeToggle } from '../../../components/ThemeToggle';
+import { StudentSidebar, StudentView } from '../../../components/StudentSidebar';
+import { MeetingRoom } from '../../../components/MeetingRoom';
+import { AIAssistant } from '../../../components/AIAssistant';
+import { ProfileSettings } from '../../../components/ProfileSettings';
+import { Video as VideoIcon } from 'lucide-react';
+import dynamic from 'next/dynamic';
+
+// Lazy-load the 3D examiner head so three.js only ships when a viva actually runs.
+const VivaAvatar3D = dynamic(() => import('../../../components/VivaAvatar3D').then((m) => m.VivaAvatar3D), {
+  ssr: false,
+  loading: () => <div className="w-full h-full flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-gray-500" /></div>,
+});
 import axios from 'axios';
 import { useRouter } from 'next/navigation';
 import gsap from 'gsap';
@@ -17,6 +29,11 @@ export default function StudentDashboard() {
   const [classrooms, setClassrooms] = useState<any[]>([]);
   const [joinCode, setJoinCode] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [studentView, setStudentView] = useState<StudentView>('classes');
+  const [myGrades, setMyGrades] = useState<any>(null);
+  const [isFetchingGrades, setIsFetchingGrades] = useState(false);
+  const [personalNotes, setPersonalNotes] = useState('');
+  const [notesSavedFlag, setNotesSavedFlag] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -33,6 +50,13 @@ export default function StudentDashboard() {
 
   // Quiz active states
   const [quizActive, setQuizActive] = useState(false);
+  const [currentAssessmentId, setCurrentAssessmentId] = useState<string>('');
+  // AI proctoring during live quizzes
+  const [proctorOn, setProctorOn] = useState(false);
+  const [proctorWarning, setProctorWarning] = useState('');
+  const proctorVideoRef = useRef<HTMLVideoElement | null>(null);
+  const proctorStreamRef = useRef<MediaStream | null>(null);
+  const proctorTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [currentQuestion, setCurrentQuestion] = useState<any>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(0);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
@@ -52,6 +76,9 @@ export default function StudentDashboard() {
   const [isAskingDoubt, setIsAskingDoubt] = useState(false);
   const [doubtError, setDoubtError] = useState('');
   const [classroomDoc, setClassroomDoc] = useState<any>(null);
+  // Live meeting
+  const [activeMeeting, setActiveMeeting] = useState<any>(null);
+  const [inMeeting, setInMeeting] = useState(false);
 
   // Live Viva Spoken Exam states
   const [vivaActive, setVivaActive] = useState(false);
@@ -65,7 +92,18 @@ export default function StudentDashboard() {
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [vivaTranscript, setVivaTranscript] = useState<any[]>([]);
   const [vivaAgentState, setVivaAgentState] = useState<'idle' | 'speaking' | 'listening' | 'thinking'>('idle');
+  const [vivaInterim, setVivaInterim] = useState(''); // live speech-to-text while the student speaks
+  const [awaitingContinue, setAwaitingContinue] = useState(false); // student controls when the next question is asked
+  // 3D examiner avatar (Ready Player Me .glb) — configurable in-app, persisted locally
+  const [avatarUrl, setAvatarUrl] = useState<string>('');
+  const [avatarStatus, setAvatarStatus] = useState<'loading' | 'loaded' | 'fallback'>('loading');
+  const [showAvatarSetup, setShowAvatarSetup] = useState(false);
+  const [avatarInput, setAvatarInput] = useState('');
+  const [vivaMicLevel, setVivaMicLevel] = useState(0); // 0..1 live mic loudness for the reactive avatar
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const micRafRef = useRef<number | null>(null);
 
   // Refs for GSAP
   const containerRef = useRef<HTMLDivElement>(null);
@@ -98,6 +136,111 @@ export default function StudentDashboard() {
     };
   }, []);
 
+  // Load any saved 3D examiner avatar URL
+  useEffect(() => {
+    const saved = localStorage.getItem('viva_avatar_url');
+    if (saved) { setAvatarUrl(saved); setAvatarInput(saved); }
+  }, []);
+
+  const saveAvatarUrl = () => {
+    const url = avatarInput.trim();
+    localStorage.setItem('viva_avatar_url', url);
+    setAvatarUrl(url);
+    setAvatarStatus('loading');
+    setShowAvatarSetup(false);
+  };
+
+  // ---- AI Proctoring: watch the webcam while a live quiz is running ----
+  useEffect(() => {
+    if (!quizActive || !selectedClassroom) {
+      // teardown
+      if (proctorTimerRef.current) { clearInterval(proctorTimerRef.current); proctorTimerRef.current = null; }
+      proctorStreamRef.current?.getTracks().forEach((t) => t.stop());
+      proctorStreamRef.current = null;
+      setProctorOn(false);
+      setProctorWarning('');
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        proctorStreamRef.current = stream;
+
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
+        await video.play().catch(() => {});
+        proctorVideoRef.current = video;
+        setProctorOn(true);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 320; canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+
+        const capture = async () => {
+          if (!ctx || !proctorVideoRef.current) return;
+          try {
+            ctx.drawImage(proctorVideoRef.current, 0, 0, canvas.width, canvas.height);
+            const frame = canvas.toDataURL('image/jpeg', 0.6);
+            const token = localStorage.getItem('token');
+            const res = await axios.post('http://localhost:5001/api/proctor/check', {
+              frame,
+              classroomId: selectedClassroom._id,
+              assessmentId: currentAssessmentId || 'live-quiz',
+            }, { headers: { Authorization: `Bearer ${token}` } });
+
+            const v: string[] = res.data?.violations || [];
+            if (v.length) {
+              const labels: Record<string, string> = {
+                no_face: 'Face not detected — stay in front of the camera',
+                multiple_faces: 'Multiple people detected in frame',
+                looking_away: 'Please keep your eyes on the screen',
+                identity_mismatch: 'Face does not match your enrolled profile',
+              };
+              setProctorWarning(labels[v[0]] || 'Proctoring flag recorded');
+              setTimeout(() => setProctorWarning(''), 4000);
+            }
+          } catch { /* transient — ignore */ }
+        };
+
+        capture();
+        proctorTimerRef.current = setInterval(capture, 8000);
+      } catch {
+        setProctorOn(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (proctorTimerRef.current) { clearInterval(proctorTimerRef.current); proctorTimerRef.current = null; }
+      proctorStreamRef.current?.getTracks().forEach((t) => t.stop());
+      proctorStreamRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quizActive, selectedClassroom]);
+
+  // Gentle mount fade for the whole portal
+  useEffect(() => {
+    if (containerRef.current) {
+      gsap.fromTo(containerRef.current, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: 'power2.out' });
+    }
+  }, []);
+
+  // Classy staggered entrance for the classroom workspace when one is opened
+  useEffect(() => {
+    if (selectedClassroom) {
+      gsap.fromTo('.ws-reveal',
+        { opacity: 0, y: 24, filter: 'blur(6px)' },
+        { opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.6, stagger: 0.08, ease: 'power3.out', clearProps: 'filter' }
+      );
+    }
+  }, [selectedClassroom]);
+
   // Listen for quiz socket events when selectedClassroom changes
   useEffect(() => {
     const socket = socketRef.current;
@@ -127,6 +270,7 @@ export default function StudentDashboard() {
 
     socket.on('quiz:started', (data: any) => {
       setQuizActive(true);
+      setCurrentAssessmentId(data.assessmentId || '');
       setCurrentQuestion(data.question);
       setCurrentQuestionIndex(data.currentIndex);
       setTimeRemaining(data.timeRemaining);
@@ -223,9 +367,23 @@ export default function StudentDashboard() {
     }
   };
 
+  const fetchActiveMeeting = async (classroomId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`http://localhost:5001/api/meetings/active/${classroomId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setActiveMeeting(res.data.meeting);
+    } catch (err) {
+      console.error('Failed to fetch active meeting:', err);
+    }
+  };
+
   useEffect(() => {
     if (selectedClassroom) {
       fetchClassroomDoc(selectedClassroom._id);
+      fetchActiveMeeting(selectedClassroom._id);
+      setInMeeting(false);
       setDoubtMessages([]);
       setDoubtError('');
     }
@@ -260,6 +418,7 @@ export default function StudentDashboard() {
     setVivaProgress(1);
     setVivaFeedback(null);
     setVivaTranscript([]);
+    setAwaitingContinue(false);
     setAudioChunks([]);
 
     try {
@@ -282,6 +441,9 @@ export default function StudentDashboard() {
 
   const startVivaRecording = async () => {
     setAudioChunks([]);
+    // Full-duplex barge-in: if the examiner is still speaking, stop it so the student can talk over it.
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    setVivaAgentState('listening');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
@@ -302,10 +464,60 @@ export default function StudentDashboard() {
       recorder.start();
       setIsRecordingViva(true);
       setVivaAgentState('listening');
+      setVivaInterim('');
+
+      // Live two-way transcript via the browser's SpeechRecognition (Chrome/Edge).
+      // Whisper still does the authoritative transcription on submit; this is for realtime feel.
+      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SR) {
+        try {
+          const recognition = new SR();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = 'en-US';
+          recognition.onresult = (event: any) => {
+            let text = '';
+            for (let i = 0; i < event.results.length; i++) {
+              text += event.results[i][0].transcript;
+            }
+            setVivaInterim(text.trim());
+          };
+          recognition.onerror = () => {};
+          recognitionRef.current = recognition;
+          recognition.start();
+        } catch { /* SpeechRecognition optional */ }
+      }
+
+      // Live mic-loudness meter so the examiner avatar reacts to your voice.
+      try {
+        const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
+        const ctx = new AudioCtx();
+        audioCtxRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+          setVivaMicLevel(Math.min(1, Math.sqrt(sum / data.length) * 3.2));
+          micRafRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch { /* audio metering optional */ }
     } catch (err) {
       console.error('Microphone access denied:', err);
       setVivaError('Microphone access denied. Please allow microphone permissions.');
     }
+  };
+
+  const stopVivaMeters = () => {
+    if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch {} recognitionRef.current = null; }
+    if (micRafRef.current) { cancelAnimationFrame(micRafRef.current); micRafRef.current = null; }
+    if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch {} audioCtxRef.current = null; }
+    setVivaMicLevel(0);
   };
 
   const stopVivaRecording = () => {
@@ -314,6 +526,7 @@ export default function StudentDashboard() {
       // Stop all audio tracks in the stream
       recorderRef.current.stream.getTracks().forEach(track => track.stop());
       setIsRecordingViva(false);
+      stopVivaMeters();
     }
   };
 
@@ -351,9 +564,12 @@ export default function StudentDashboard() {
         setVivaQuestion('');
         speakQuestion("Viva completed. Well done.");
       } else {
+        // Don't jump straight into the next question — let the student read their
+        // feedback and press Continue when they're ready.
         setVivaQuestion(nextQuestion);
         setVivaProgress((prev) => prev + 1);
-        speakQuestion(nextQuestion);
+        setAwaitingContinue(true);
+        setVivaAgentState('idle');
       }
     } catch (err: any) {
       setVivaError(err.response?.data?.error || 'Failed to submit verbal answer. Please try again.');
@@ -370,6 +586,9 @@ export default function StudentDashboard() {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    stopVivaMeters();
+    setVivaInterim('');
+    setAwaitingContinue(false);
     setVivaActive(false);
     setIsRecordingViva(false);
     setIsSubmittingVivaAnswer(false);
@@ -521,6 +740,33 @@ export default function StudentDashboard() {
     router.push('/');
   };
 
+  // ---- Student sidebar views: grades + personal notes ----
+  const fetchMyGrades = async () => {
+    setIsFetchingGrades(true);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.get('http://localhost:5001/api/classrooms/students/me/grades', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setMyGrades(res.data);
+    } catch (err) {
+      console.error('Failed to fetch grades:', err);
+    } finally {
+      setIsFetchingGrades(false);
+    }
+  };
+
+  useEffect(() => {
+    if ((studentView === 'grades' || studentView === 'home') && !myGrades) fetchMyGrades();
+    if (studentView === 'notes') setPersonalNotes(localStorage.getItem(`student_notes_${myId}`) || '');
+  }, [studentView]);
+
+  const savePersonalNotes = () => {
+    localStorage.setItem(`student_notes_${myId}`, personalNotes);
+    setNotesSavedFlag(true);
+    setTimeout(() => setNotesSavedFlag(false), 1800);
+  };
+
   useEffect(() => {
     if (isModalOpen) {
       gsap.fromTo(modalRef.current,
@@ -531,40 +777,42 @@ export default function StudentDashboard() {
   }, [isModalOpen]);
 
   return (
-    <div ref={containerRef} className="themed-surface relative min-h-screen w-full bg-theme text-white p-6 md:p-12 overflow-x-hidden">
-      {/* Aesthetic ambient lighting */}
-      <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/10 blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/10 blur-[130px] pointer-events-none" />
+    <div className="themed-surface flex min-h-screen bg-theme text-white">
+      <StudentSidebar
+        view={studentView}
+        setView={(v) => { setStudentView(v); if (v !== 'classes') setSelectedClassroom(null); }}
+        studentName={studentName}
+        onJoin={() => setIsModalOpen(true)}
+        onFace={() => setIsFaceSetupOpen(true)}
+        onLogout={handleLogout}
+      />
+      <div ref={containerRef} className="relative flex-1 min-w-0 p-6 md:p-10 overflow-x-hidden">
+        {/* Aesthetic ambient lighting */}
+        <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/10 blur-[130px] pointer-events-none" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-zinc-500/10 blur-[130px] pointer-events-none" />
 
+      {studentView === 'classes' && (
+      <>
       {/* Top Navigation */}
-      <nav className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-12 border-b border-white/5 pb-6">
+      <nav className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-10 border-b border-white/5 pb-6">
         <div>
           <div className="flex items-center gap-2 text-zinc-400 mb-1">
             <Sparkles className="w-4 h-4" />
-            <span className="text-xs font-semibold tracking-wider uppercase">AxesAI Student Portal</span>
+            <span className="text-xs font-semibold tracking-wider uppercase">My Classes</span>
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight accent-gradient-text">
             Welcome, {studentName}
           </h1>
         </div>
-        <div className="flex gap-3 items-center">
-          <ThemeToggle />
-          <GlassButton onClick={() => setIsFaceSetupOpen(true)} className="flex items-center gap-2 border-zinc-500/20 hover:bg-zinc-500/10 text-zinc-300">
-            <Camera className="w-4 h-4" /> Setup Face Login
-          </GlassButton>
-          <GlassButton onClick={() => setIsModalOpen(true)} variant="accent" className="flex items-center gap-2">
-            <Plus className="w-4 h-4" /> Join Classroom
-          </GlassButton>
-          <GlassButton onClick={handleLogout} className="flex items-center gap-2 border-red-500/20 hover:bg-red-500/10 hover:border-red-500/30">
-            <LogOut className="w-4 h-4 text-red-400" /> Sign Out
-          </GlassButton>
-        </div>
+        <GlassButton onClick={() => setIsModalOpen(true)} variant="accent" className="flex items-center gap-2">
+          <Plus className="w-4 h-4" /> Join Classroom
+        </GlassButton>
       </nav>
 
       {/* Main Workspace grid */}
       <main className="relative z-10 max-w-6xl mx-auto">
         {selectedClassroom ? (
-          <div>
+          <div className="ws-reveal">
             <div className="flex items-center gap-4 mb-6">
               <GlassButton onClick={() => setSelectedClassroom(null)} className="text-xs">
                 &larr; Back to Classrooms
@@ -576,6 +824,38 @@ export default function StudentDashboard() {
                 </p>
               </div>
             </div>
+
+            {/* ---- Live Class Meeting ---- */}
+            {inMeeting && activeMeeting ? (
+              <div className="mb-8">
+                <MeetingRoom
+                  meeting={activeMeeting}
+                  socket={socketRef.current}
+                  userId={myId}
+                  userName={studentName}
+                  role="student"
+                  isHost={false}
+                  onLeave={() => { setInMeeting(false); fetchActiveMeeting(selectedClassroom._id); }}
+                />
+              </div>
+            ) : activeMeeting ? (
+              <GlassPanel className="p-6 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-red-500/20">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+                    <VideoIcon className="w-6 h-6 text-red-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /> Live class in progress
+                    </h3>
+                    <p className="text-xs text-gray-400">{activeMeeting.title} · Your teacher is live now.</p>
+                  </div>
+                </div>
+                <GlassButton variant="accent" onClick={() => setInMeeting(true)} className="flex items-center gap-2">
+                  <VideoIcon className="w-4 h-4" /> Join Live Class
+                </GlassButton>
+              </GlassPanel>
+            ) : null}
 
             {/* Scoreboard View */}
             {scoreboard && (
@@ -679,6 +959,11 @@ export default function StudentDashboard() {
                   </GlassPanel>
                 ) : (
                   <GlassPanel className="p-8 border-zinc-500/30 relative">
+                    {proctorWarning && (
+                      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-xl bg-red-500/15 border border-red-500/40 text-xs text-red-200 font-medium backdrop-blur">
+                        ⚠ {proctorWarning}
+                      </div>
+                    )}
                     {/* Header with progress and timer */}
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 border-b border-white/10 pb-4">
                       <div>
@@ -686,6 +971,14 @@ export default function StudentDashboard() {
                         <h3 className="text-xl font-bold text-white mt-1">Question {currentQuestionIndex + 1}</h3>
                       </div>
                       <div className="flex items-center gap-6">
+                        {/* AI proctoring indicator */}
+                        {proctorOn && (
+                          <div className="flex items-center gap-2 bg-black/40 px-3 py-1.5 rounded-lg border border-red-500/25 text-xs">
+                            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                            <span className="text-gray-400">AI Proctoring</span>
+                            <span className="font-bold text-red-400">ON</span>
+                          </div>
+                        )}
                         {/* Violations counter */}
                         <div className="flex items-center gap-2 bg-black/40 px-3 py-1.5 rounded-lg border border-white/10 text-xs">
                           <ShieldCheck className="w-4 h-4 text-zinc-400" />
@@ -759,8 +1052,8 @@ export default function StudentDashboard() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2 flex flex-col space-y-4">
+            <div className={`grid grid-cols-1 gap-6 ${activeChatTab === 'viva' ? '' : 'lg:grid-cols-3'}`}>
+              <div className={`flex flex-col space-y-4 ${activeChatTab === 'viva' ? '' : 'lg:col-span-2'}`}>
                 {/* Tab Switcher */}
                 <div className="flex gap-2 p-1.5 bg-white/5 border border-white/10 rounded-xl w-fit">
                   <button
@@ -935,52 +1228,94 @@ export default function StudentDashboard() {
                       </div>
                     ) : (
                       <div className="flex-1 flex flex-col justify-between">
-                        {/* AI Examiner Avatar */}
+                        {/* AI Examiner — person-like reactive avatar */}
                         <div className="flex flex-col items-center mb-4">
-                          <div className="relative w-24 h-24 flex items-center justify-center">
-                            {/* Animated rings reflect the examiner's live state */}
-                            <span className={`absolute inset-0 rounded-full ${
-                              vivaAgentState === 'speaking' ? 'bg-zinc-500/20 animate-ping' :
-                              vivaAgentState === 'listening' ? 'bg-red-500/20 animate-ping' :
-                              vivaAgentState === 'thinking' ? 'bg-zinc-500/20 animate-pulse' : 'bg-white/5'
-                            }`} />
-                            <span className={`absolute inset-2 rounded-full ${
-                              vivaAgentState === 'speaking' ? 'bg-zinc-500/25 animate-pulse' :
-                              vivaAgentState === 'listening' ? 'bg-red-500/25 animate-pulse' :
-                              vivaAgentState === 'thinking' ? 'bg-zinc-500/25' : 'bg-white/5'
-                            }`} />
-                            <div className={`relative w-16 h-16 rounded-full flex items-center justify-center border-2 ${
-                              vivaAgentState === 'speaking' ? 'border-zinc-400 bg-zinc-500/30' :
-                              vivaAgentState === 'listening' ? 'border-red-400 bg-red-500/30' :
-                              vivaAgentState === 'thinking' ? 'border-zinc-400 bg-zinc-500/30' : 'border-white/20 bg-white/10'
-                            }`}>
-                              {vivaAgentState === 'thinking'
-                                ? <Loader2 className="w-7 h-7 text-zinc-300 animate-spin" />
-                                : vivaAgentState === 'listening'
-                                ? <Camera className="w-7 h-7 text-red-300" />
-                                : <Sparkles className={`w-7 h-7 text-zinc-300 ${vivaAgentState === 'speaking' ? 'animate-pulse' : ''}`} />}
-                            </div>
+                          {/* Large 3D examiner stage */}
+                          <div
+                            className="relative w-full h-[420px] rounded-3xl overflow-hidden"
+                            style={{
+                              background: 'radial-gradient(circle at 50% 30%, rgba(70,72,90,0.35), rgba(9,9,13,0.75))',
+                              border: '1px solid rgba(255,255,255,0.08)',
+                              boxShadow: 'inset 0 0 60px rgba(0,0,0,0.5)',
+                            }}
+                          >
+                            <VivaAvatar3D
+                              state={vivaAgentState}
+                              micLevel={vivaMicLevel}
+                              modelUrl={avatarUrl || undefined}
+                              onStatus={setAvatarStatus}
+                            />
+
+                            {/* Avatar setup — shown when the human model isn't loaded */}
+                            <button
+                              onClick={() => setShowAvatarSetup((v) => !v)}
+                              className="absolute top-3 right-3 text-[11px] px-2.5 py-1.5 rounded-lg bg-black/50 border border-white/10 text-gray-300 hover:text-white transition cursor-pointer"
+                            >
+                              {avatarStatus === 'loaded' ? '⚙ Change avatar' : '⚙ Use a real human avatar'}
+                            </button>
+
+                            {avatarStatus === 'fallback' && !showAvatarSetup && (
+                              <div className="absolute bottom-3 left-3 right-3 text-[11px] px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-200">
+                                Showing the stylized examiner — add a Ready Player Me avatar URL to get a photoreal human with lip-sync.
+                              </div>
+                            )}
+
+                            {showAvatarSetup && (
+                              <div className="absolute inset-x-3 bottom-3 p-3 rounded-2xl bg-black/80 border border-white/15 backdrop-blur">
+                                <p className="text-[11px] text-gray-300 mb-2">
+                                  1. Create a free avatar at <a href="https://readyplayer.me/avatar" target="_blank" rel="noreferrer" className="underline text-white">readyplayer.me/avatar</a> →
+                                  2. copy its <strong className="text-white">.glb</strong> link → 3. paste below.
+                                </p>
+                                <div className="flex gap-2">
+                                  <input
+                                    value={avatarInput}
+                                    onChange={(e) => setAvatarInput(e.target.value)}
+                                    placeholder="https://models.readyplayer.me/xxxxxxxx.glb"
+                                    className="flex-1 bg-white/5 border border-white/15 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none focus:border-white/40"
+                                  />
+                                  <GlassButton variant="accent" onClick={saveAvatarUrl} className="text-xs !py-2 !px-4">Load</GlassButton>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* live mic meter bar */}
+                            {vivaAgentState === 'listening' && (
+                              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-40 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                                <div className="h-full bg-red-400 transition-[width] duration-75" style={{ width: `${Math.min(100, vivaMicLevel * 130)}%` }} />
+                              </div>
+                            )}
                           </div>
-                          <p className="mt-3 text-xs font-semibold text-white">AI Examiner</p>
+
+                          <p className="mt-3 text-sm font-bold text-white">Examiner Aria</p>
                           <p className={`text-[11px] font-medium ${
-                            vivaAgentState === 'speaking' ? 'text-zinc-300' :
+                            vivaAgentState === 'speaking' ? 'text-white' :
                             vivaAgentState === 'listening' ? 'text-red-300' :
-                            vivaAgentState === 'thinking' ? 'text-zinc-300' : 'text-gray-500'
+                            vivaAgentState === 'thinking' ? 'text-gray-300' : 'text-gray-500'
                           }`}>
-                            {vivaAgentState === 'speaking' ? '🔊 Asking the question…' :
-                             vivaAgentState === 'listening' ? '🎙️ Listening to your answer…' :
+                            {vivaAgentState === 'speaking' ? '🔊 Speaking…' :
+                             vivaAgentState === 'listening' ? '🎙️ Listening to you…' :
                              vivaAgentState === 'thinking' ? '🤔 Evaluating your answer…' :
-                             'Ready for your response'}
+                             'Ready when you are'}
                           </p>
                           {vivaQuestion && (
                             <button
                               onClick={() => speakQuestion(vivaQuestion)}
-                              className="mt-2 text-[10px] text-zinc-300 hover:text-zinc-100 underline"
+                              className="mt-2 text-[10px] text-gray-400 hover:text-white underline"
                             >
                               ↻ Repeat question
                             </button>
                           )}
                         </div>
+
+                        {/* Live two-way transcript while you speak */}
+                        {isRecordingViva && (
+                          <div className="mb-4 p-3 rounded-xl bg-red-500/[0.06] border border-red-500/20 text-center">
+                            <p className="text-[10px] uppercase tracking-wider text-red-300 font-semibold mb-1 flex items-center justify-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /> You're speaking
+                            </p>
+                            <p className="text-sm text-white min-h-[20px] leading-relaxed">{vivaInterim || <span className="text-gray-500">Start speaking your answer…</span>}</p>
+                          </div>
+                        )}
 
                         {/* Upper Section: Agent Question Card */}
                         <div className="space-y-4 overflow-y-auto max-h-[300px] pr-1">
@@ -1039,6 +1374,17 @@ export default function StudentDashboard() {
                                 <span className="w-3 h-3 rounded-full bg-red-500 inline-block animate-ping" />
                                 Stop & Submit Spoken Answer
                               </button>
+                            ) : awaitingContinue ? (
+                              <div className="flex flex-col items-center gap-2">
+                                <button
+                                  onClick={() => { setAwaitingContinue(false); speakQuestion(vivaQuestion); }}
+                                  className="flex items-center gap-2 bg-white text-black font-bold px-6 py-3 rounded-full hover:opacity-90 transition cursor-pointer"
+                                >
+                                  <Play className="w-4.5 h-4.5" />
+                                  Continue to next question
+                                </button>
+                                <p className="text-[11px] text-gray-500">Read your feedback above, then continue when ready.</p>
+                              </div>
                             ) : (
                               vivaQuestion ? (
                                 <button
@@ -1046,7 +1392,7 @@ export default function StudentDashboard() {
                                   className="flex items-center gap-2 bg-zinc-500/20 border border-zinc-500/30 text-zinc-300 font-bold px-6 py-3 rounded-full hover:bg-zinc-500/30 transition shadow-[0_0_15px_rgba(168,85,247,0.2)] cursor-pointer"
                                 >
                                   <Camera className="w-4.5 h-4.5 text-zinc-400" />
-                                  Speak / Record Response
+                                  {vivaAgentState === 'speaking' ? 'Interrupt & Answer' : 'Speak / Record Response'}
                                 </button>
                               ) : (
                                 <div className="text-center w-full space-y-3">
@@ -1066,7 +1412,7 @@ export default function StudentDashboard() {
                   </GlassPanel>
                 )}
               </div>
-              <div className="space-y-6">
+              <div className={`space-y-6 ${activeChatTab === 'viva' ? 'hidden' : ''}`}>
                 <GlassPanel className="p-6">
                   <h3 className="text-lg font-bold text-white mb-4">Classroom Details</h3>
                   <div className="space-y-3 text-sm text-gray-300">
@@ -1124,6 +1470,100 @@ export default function StudentDashboard() {
           </div>
         )}
       </main>
+      </>
+      )}
+
+      {/* ===== HOME VIEW ===== */}
+      {studentView === 'home' && (
+        <div className="relative z-10 max-w-5xl mx-auto">
+          <div className="mb-8">
+            <div className="flex items-center gap-2 text-zinc-400 mb-1"><Sparkles className="w-4 h-4" /><span className="text-xs font-semibold tracking-wider uppercase">Student Portal</span></div>
+            <h1 className="text-3xl font-extrabold tracking-tight accent-gradient-text">Welcome back, {studentName} 👋</h1>
+            <p className="text-gray-400 mt-1 text-sm">Here's your learning workspace at a glance.</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mb-8">
+            <GlassPanel className="p-6 text-center"><p className="text-3xl font-extrabold text-white">{classrooms.length}</p><p className="text-xs text-gray-500 mt-1 uppercase tracking-wider">Enrolled Classes</p></GlassPanel>
+            <GlassPanel className="p-6 text-center"><p className="text-3xl font-extrabold text-white">{myGrades ? myGrades.totalQuizzes : '—'}</p><p className="text-xs text-gray-500 mt-1 uppercase tracking-wider">Quizzes Taken</p></GlassPanel>
+            <GlassPanel className="p-6 text-center"><p className="text-3xl font-extrabold text-white">{myGrades ? myGrades.averageScore.toFixed(1) : '—'}</p><p className="text-xs text-gray-500 mt-1 uppercase tracking-wider">Avg Score</p></GlassPanel>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <GlassButton variant="accent" onClick={() => setStudentView('classes')} className="flex items-center gap-2"><BookOpen className="w-4 h-4" /> Go to My Classes</GlassButton>
+            <GlassButton onClick={() => setStudentView('grades')} className="flex items-center gap-2"><GraduationCap className="w-4 h-4" /> View Grades</GlassButton>
+            <GlassButton onClick={() => setStudentView('notes')} className="flex items-center gap-2"><StickyNote className="w-4 h-4" /> My Notes</GlassButton>
+          </div>
+        </div>
+      )}
+
+      {/* ===== GRADES VIEW ===== */}
+      {studentView === 'grades' && (
+        <div className="relative z-10 max-w-4xl mx-auto">
+          <div className="mb-8"><h1 className="text-3xl font-extrabold accent-gradient-text flex items-center gap-3"><GraduationCap className="w-7 h-7 text-zinc-400" /> My Grades</h1><p className="text-gray-400 mt-1 text-sm">Your quiz and viva results across all classes.</p></div>
+          {isFetchingGrades ? (
+            <GlassPanel className="p-10 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-zinc-400" /></GlassPanel>
+          ) : myGrades ? (
+            <div className="space-y-6">
+              <div className="grid grid-cols-3 gap-4">
+                <GlassPanel className="p-5 text-center"><p className="text-2xl font-extrabold text-white">{myGrades.totalQuizzes}</p><p className="text-[10px] text-gray-500 uppercase tracking-wider mt-1">Quizzes</p></GlassPanel>
+                <GlassPanel className="p-5 text-center"><p className="text-2xl font-extrabold text-white">{myGrades.averageScore.toFixed(1)}</p><p className="text-[10px] text-gray-500 uppercase tracking-wider mt-1">Average</p></GlassPanel>
+                <GlassPanel className="p-5 text-center"><p className="text-2xl font-extrabold text-white">{myGrades.bestScore}</p><p className="text-[10px] text-gray-500 uppercase tracking-wider mt-1">Best</p></GlassPanel>
+              </div>
+              <GlassPanel className="p-6">
+                <h3 className="text-lg font-bold text-white mb-4">Quiz Results</h3>
+                {myGrades.quizzes.length ? myGrades.quizzes.map((q: any, i: number) => (
+                  <div key={i} className="flex justify-between items-center py-2.5 border-b border-white/5 text-sm">
+                    <span className="text-gray-300">{q.name}</span>
+                    <span className="font-semibold text-green-400">{q.score} pts{q.violations > 0 && <span className="text-red-400 text-xs ml-2">{q.violations} viol.</span>}</span>
+                  </div>
+                )) : <p className="text-sm text-gray-500">No quizzes taken yet.</p>}
+              </GlassPanel>
+              <GlassPanel className="p-6">
+                <h3 className="text-lg font-bold text-white mb-4">Viva Results</h3>
+                {myGrades.vivas.length ? myGrades.vivas.map((v: any, i: number) => (
+                  <div key={i} className="flex justify-between items-center py-2.5 border-b border-white/5 text-sm">
+                    <span className="text-gray-300">{v.topic}</span>
+                    <span className="font-semibold text-green-400">{v.score}/{v.maxScore}</span>
+                  </div>
+                )) : <p className="text-sm text-gray-500">No viva sessions yet.</p>}
+              </GlassPanel>
+            </div>
+          ) : <GlassPanel className="p-10 text-center text-gray-400 text-sm">No grades recorded yet.</GlassPanel>}
+        </div>
+      )}
+
+      {/* ===== ATTENDANCE VIEW ===== */}
+      {studentView === 'attendance' && (
+        <div className="relative z-10 max-w-4xl mx-auto">
+          <div className="mb-8"><h1 className="text-3xl font-extrabold accent-gradient-text flex items-center gap-3"><UserCheck className="w-7 h-7 text-zinc-400" /> Attendance</h1><p className="text-gray-400 mt-1 text-sm">You're automatically marked present when you open a live classroom.</p></div>
+          <GlassPanel className="p-6">
+            <h3 className="text-lg font-bold text-white mb-4">Your Classes</h3>
+            {classrooms.length ? classrooms.map((c: any) => (
+              <div key={c._id} className="flex justify-between items-center py-3 border-b border-white/5">
+                <div><p className="text-sm text-white font-medium">{c.name}</p><p className="text-[11px] text-gray-500">Instructor: {c.teacherId?.name || 'Assigned'}</p></div>
+                <button onClick={() => { setSelectedClassroom(c); setStudentView('classes'); }} className="text-xs text-zinc-300 hover:text-white border border-white/10 rounded-lg px-3 py-1.5 transition">Open &amp; mark present</button>
+              </div>
+            )) : <p className="text-sm text-gray-500">You haven't joined any classes yet.</p>}
+          </GlassPanel>
+        </div>
+      )}
+
+      {/* ===== AI ASSISTANT VIEW ===== */}
+      {studentView === 'ai' && <AIAssistant userName={studentName} role="student" />}
+
+      {/* ===== SETTINGS VIEW ===== */}
+      {studentView === 'settings' && <ProfileSettings onUpdated={(u) => setStudentName(u.name)} />}
+
+      {/* ===== NOTES VIEW ===== */}
+      {studentView === 'notes' && (
+        <div className="relative z-10 max-w-3xl mx-auto">
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <div><h1 className="text-3xl font-extrabold accent-gradient-text flex items-center gap-3"><StickyNote className="w-7 h-7 text-zinc-400" /> My Notes</h1><p className="text-gray-400 mt-1 text-sm">Private study notes, saved on this device.</p></div>
+            <GlassButton variant="accent" onClick={savePersonalNotes} className="flex items-center gap-2"><Save className="w-4 h-4" /> {notesSavedFlag ? 'Saved!' : 'Save'}</GlassButton>
+          </div>
+          <GlassPanel className="p-2">
+            <textarea value={personalNotes} onChange={(e) => setPersonalNotes(e.target.value)} placeholder="Write your study notes here…" className="w-full h-[440px] bg-transparent outline-none resize-none p-4 text-sm text-gray-200 placeholder-gray-600 leading-relaxed" />
+          </GlassPanel>
+        </div>
+      )}
 
       {/* Violation Warning Modal */}
       {violationWarning && (
@@ -1222,6 +1662,7 @@ export default function StudentDashboard() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
